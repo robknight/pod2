@@ -1,0 +1,6 @@
+[book]
+authors = ["0xPARC"]
+language = "en"
+multilingual = false
+src = "src"
+title = "POD2-docs"
