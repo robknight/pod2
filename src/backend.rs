@@ -1,71 +1,15 @@
+// TODO: Move the SignedPod.id calculation to mock_signed
+// TODO: Move the MainPod logic to mock_main and implement the MainPod trait
+/*
 use anyhow::Result;
 use itertools::Itertools;
 use plonky2::field::types::{Field, PrimeField64};
 use std::collections::HashMap;
-use std::fmt;
 use std::io::{self, Write};
 use std::iter;
-use strum_macros::FromRepr;
 
-use crate::{merkletree::MerkleTree, Hash, Params, PodId, F, NULL};
-
-#[derive(Clone, Copy, Debug, FromRepr, PartialEq, Eq)]
-pub enum NativeStatement {
-    None = 0,
-    ValueOf = 1,
-    Equal = 2,
-    NotEqual,
-    Gt,
-    Lt,
-    Contains,
-    NotContains,
-    SumOf,
-    ProductOf,
-    MaxOf,
-}
-
-#[derive(Clone, Copy, Debug, Default, Hash, PartialEq, Eq)]
-pub struct Value(pub [F; 4]);
-
-impl fmt::Display for Value {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.0[2].is_zero() && self.0[3].is_zero() {
-            // Assume this is an integer
-            let (l0, l1) = (self.0[0].to_canonical_u64(), self.0[1].to_canonical_u64());
-            assert!(l0 < (1 << 32));
-            assert!(l1 < (1 << 32));
-            write!(f, "{}", l0 + l1 * (1 << 32))
-        } else {
-            // Assume this is a hash
-            Hash(self.0).fmt(f)
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct AnchoredKey(pub PodId, pub Hash);
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StatementArg {
-    None,
-    Literal(Value),
-    Ref(AnchoredKey),
-}
-
-impl StatementArg {
-    pub fn is_none(&self) -> bool {
-        matches!(self, Self::None)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Statement(pub NativeStatement, pub Vec<StatementArg>);
-
-impl Statement {
-    pub fn is_none(&self) -> bool {
-        matches!(self.0, NativeStatement::None)
-    }
-}
+use crate::merkletree::MerkleTree;
+use crate::middleware::{Hash, Params, PodId, Value, NULL};
 
 #[derive(Clone, Debug)]
 pub struct SignedPod {
@@ -306,3 +250,4 @@ mod tests {
         Ok(())
     }
 }
+*/
