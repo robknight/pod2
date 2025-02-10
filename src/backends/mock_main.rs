@@ -1,6 +1,7 @@
 use crate::middleware::{
-    self, Hash, MainPod, MainPodInputs, NativeOperation, NativeStatement, NoneMainPod,
-    NoneSignedPod, Params, PodId, PodProver, SignedPod, Statement, StatementArg, ToFields,
+    self, hash_str, AnchoredKey, Hash, MainPod, MainPodInputs, NativeOperation, NativeStatement,
+    NoneMainPod, NoneSignedPod, Params, PodId, PodProver, SignedPod, Statement, StatementArg,
+    ToFields, KEY_TYPE, SELF,
 };
 use anyhow::Result;
 use itertools::Itertools;
@@ -32,6 +33,22 @@ impl OperationArg {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Operation(pub NativeOperation, pub Vec<OperationArg>);
+
+impl Operation {
+    pub fn deref(&self, statements: &[Statement]) -> crate::middleware::Operation {
+        let deref_args = self
+            .1
+            .iter()
+            .map(|arg| match arg {
+                OperationArg::None => middleware::OperationArg::None,
+                OperationArg::Index(i) => {
+                    middleware::OperationArg::Statement(statements[*i].clone())
+                }
+            })
+            .collect();
+        middleware::Operation(self.0, deref_args)
+    }
+}
 
 impl fmt::Display for Operation {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -206,8 +223,12 @@ impl MockMainPod {
         }
 
         // Public statements
-        assert!(inputs.public_statements.len() <= params.max_public_statements);
-        for i in 0..params.max_public_statements {
+        assert!(inputs.public_statements.len() < params.max_public_statements);
+        statements.push(Statement(
+            NativeStatement::ValueOf,
+            vec![StatementArg::Key(AnchoredKey(SELF, hash_str(KEY_TYPE)))],
+        ));
+        for i in 0..(params.max_public_statements - 1) {
             let mut st = inputs.public_statements.get(i).unwrap_or(&st_none).clone();
             Self::pad_statement_args(params, &mut st.1);
             statements.push(st);
@@ -275,8 +296,9 @@ impl MockMainPod {
         let op_none = Self::operation_none(params);
 
         let offset_public_statements = statements.len() - params.max_public_statements;
-        for i in 0..params.max_public_statements {
-            let st = &statements[offset_public_statements + i];
+        operations.push(Operation(NativeOperation::NewEntry, vec![]));
+        for i in 0..(params.max_public_statements - 1) {
+            let st = &statements[offset_public_statements + i + 1];
             let mut op = if st.is_none() {
                 Operation(NativeOperation::None, vec![])
             } else {
@@ -311,7 +333,8 @@ impl MockMainPod {
             .collect_vec();
         let input_main_pods = inputs.main_pods.iter().map(|p| (*p).clone()).collect_vec();
         let input_statements = inputs.statements.iter().cloned().collect_vec();
-        let public_statements = inputs.public_statements.iter().cloned().collect_vec();
+        let public_statements =
+            statements[statements.len() - params.max_public_statements..].to_vec();
 
         // get the id out of the public statements
         let id: PodId = PodId(hash_statements(&public_statements)?);
@@ -363,26 +386,94 @@ pub fn hash_statements(statements: &[middleware::Statement]) -> Result<middlewar
 
 impl MainPod for MockMainPod {
     fn verify(&self) -> bool {
-        // TODO
-        // - define input_statements as `statements.[self.offset_input_statements()..]`
-        // - Calculate the id from a subset of the statements.  Check it's equal to self.id
-        // - Find a ValueOf statement from the public statements with key=KEY_TYPE and check that
-        // the value is PodType::MockMainPod
-        // - Check that all `input_statements` of type `ValueOf` with origin=SELF have unique keys
+        let input_statement_offset = self.offset_input_statements();
+        // get the input_statements from the self.statements
+        let input_statements = &self.statements[input_statement_offset..];
+        // get the id out of the public statements, and ensure it is equal to self.id
+        let ids_match = self.id == PodId(hash_statements(&self.public_statements).unwrap());
+        // find a ValueOf statement from the public statements with key=KEY_TYPE and check that the
+        // value is PodType::MockMainPod
+        let has_type_statement = self
+            .public_statements
+            .iter()
+            .find(|s| {
+                s.0 == NativeStatement::ValueOf
+                    && s.1.len() > 0
+                    && if let StatementArg::Key(AnchoredKey(pod_id, key_hash)) = s.1[0] {
+                        pod_id == SELF && key_hash == hash_str(KEY_TYPE)
+                    } else {
+                        false
+                    }
+            })
+            .is_some();
+        // check that all `input_statements` of type `ValueOf` with origin=SELF have unique keys
         // (no duplicates)
-        // - Verify that all `input_statements` are correctly generated
+        // TODO: Instead of doing this, do a uniqueness check when verifying the output of a
+        // `NewValue` operation.
+        let value_ofs_unique = {
+            let key_id_pairs = input_statements
+                .into_iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    (
+                        // Separate private from public statements.
+                        if i < self.params.max_priv_statements() {
+                            0
+                        } else {
+                            1
+                        },
+                        s,
+                    )
+                })
+                .filter(|(i, s)| s.0 == NativeStatement::ValueOf)
+                .flat_map(|(i, s)| {
+                    if let StatementArg::Key(ak) = &s.1[0] {
+                        vec![(i, ak.1, ak.0)]
+                    } else {
+                        vec![]
+                    }
+                })
+                .collect::<Vec<_>>();
+            !(0..key_id_pairs.len() - 1).any(|i| key_id_pairs[i + 1..].contains(&key_id_pairs[i]))
+        };
+        // verify that all `input_statements` are correctly generated
         // by `self.operations` (where each operation can only access previous statements)
-        todo!()
+        let statement_check = input_statements
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                self.operations[i]
+                    .deref(&self.statements[..input_statement_offset + i])
+                    .check(s.clone())
+            })
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        ids_match && has_type_statement && value_ofs_unique & statement_check.into_iter().all(|b| b)
     }
     fn id(&self) -> PodId {
         self.id
     }
     fn pub_statements(&self) -> Vec<Statement> {
-        // TODO: All arguments that use origin=SELF need to be replaced by origin=self.id()
+        // return the public statements, where when origin=SELF is replaced by origin=self.id()
         self.statements
             .iter()
             .skip(self.offset_public_statements())
             .cloned()
+            .map(|statement| {
+                Statement(
+                    statement.0.clone(),
+                    statement
+                        .1
+                        .iter()
+                        .map(|sa| match &sa {
+                            StatementArg::Key(AnchoredKey(pod_id, h)) if *pod_id == SELF => {
+                                StatementArg::Key(AnchoredKey(self.id(), *h))
+                            }
+                            _ => sa.clone(),
+                        })
+                        .collect(),
+                )
+            })
             .collect()
     }
 
@@ -419,8 +510,8 @@ pub mod tests {
 
         println!("{:#}", pod);
 
-        // assert_eq!(pod.verify(), true); // TODO
-        // println!("id: {}", pod.id());
-        // println!("kvs: {:?}", pod.pub_statements());
+        assert_eq!(pod.verify(), true); // TODO
+                                        // println!("id: {}", pod.id());
+                                        // println!("pub_statements: {:?}", pod.pub_statements());
     }
 }
