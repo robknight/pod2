@@ -545,63 +545,44 @@ impl MainPodCompiler {
 // TODO fn fmt_signed_pod_builder
 // TODO fn fmt_main_pod
 
+#[macro_use]
+pub mod build_utils {
+    #[macro_export]
+    macro_rules! op_args {
+        ($($arg:expr),+) => {vec![$(crate::frontend::OperationArg::from($arg)),*]}
+    }
+
+    #[macro_export]
+    macro_rules! op {
+        (eq, $($arg:expr),+) => { crate::frontend::Operation(
+            crate::middleware::NativeOperation::EqualFromEntries,
+            crate::op_args!($($arg),*)) };
+        (ne, $($arg:expr),+) => { crate::frontend::Operation(
+            crate::middleware::NativeOperation::NotEqualFromEntries,
+            crate::op_args!($($arg),*)) };
+        (gt, $($arg:expr),+) => { crate::frontend::Operation(
+            crate::middleware::NativeOperation::GtFromEntries,
+            crate::op_args!($($arg),*)) };
+        (lt, $($arg:expr),+) => { crate::frontend::Operation(
+            crate::middleware::NativeOperation::LtFromEntries,
+            crate::op_args!($($arg),*)) };
+        (contains, $($arg:expr),+) => { crate::frontend::Operation(
+            crate::middleware::NativeOperation::ContainsFromEntries,
+            crate::op_args!($($arg),*)) };
+        (not_contains, $($arg:expr),+) => { crate::frontend::Operation(
+            crate::middleware::NativeOperation::NotContainsFromEntries,
+            crate::op_args!($($arg),*)) };
+    }
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
     use crate::backends::mock_signed::MockSigner;
-
-    macro_rules! args {
-        ($($arg:expr),+) => {vec![$(OperationArg::from($arg)),*]}
-    }
-
-    macro_rules! op {
-        (eq, $($arg:expr),+) => { Operation(NativeOperation::EqualFromEntries, args!($($arg),*)) };
-        (ne, $($arg:expr),+) => { Operation(NativeOperation::NotEqualFromEntries, args!($($arg),*)) };
-        (gt, $($arg:expr),+) => { Operation(NativeOperation::GtFromEntries, args!($($arg),*)) };
-        (lt, $($arg:expr),+) => { Operation(NativeOperation::LtFromEntries, args!($($arg),*)) };
-        (contains, $($arg:expr),+) => { Operation(NativeOperation::ContainsFromEntries, args!($($arg),*)) };
-        (not_contains, $($arg:expr),+) => { Operation(NativeOperation::NotContainsFromEntries, args!($($arg),*)) };
-    }
-
-    pub fn zu_kyc_sign_pod_builders(params: &Params) -> (SignedPodBuilder, SignedPodBuilder) {
-        let mut gov_id = SignedPodBuilder::new(params);
-        gov_id.insert("idNumber", "4242424242");
-        gov_id.insert("dateOfBirth", 1169909384);
-        gov_id.insert("socialSecurityNumber", "G2121210");
-
-        let mut pay_stub = SignedPodBuilder::new(params);
-        pay_stub.insert("socialSecurityNumber", "G2121210");
-        pay_stub.insert("startDate", 1706367566);
-
-        (gov_id, pay_stub)
-    }
-
-    pub fn zu_kyc_pod_builder(
-        params: &Params,
-        gov_id: &SignedPod,
-        pay_stub: &SignedPod,
-    ) -> MainPodBuilder {
-        let sanction_list = Value::MerkleTree(MerkleTree { root: 1 });
-        let now_minus_18y: i64 = 1169909388;
-        let now_minus_1y: i64 = 1706367566;
-
-        let mut kyc = MainPodBuilder::new(&params);
-        kyc.add_signed_pod(&gov_id);
-        kyc.add_signed_pod(&pay_stub);
-        kyc.pub_op(op!(not_contains, &sanction_list, (gov_id, "idNumber")));
-        kyc.pub_op(op!(lt, (gov_id, "dateOfBirth"), now_minus_18y));
-        kyc.pub_op(op!(
-            eq,
-            (gov_id, "socialSecurityNumber"),
-            (pay_stub, "socialSecurityNumber")
-        ));
-        kyc.pub_op(op!(eq, (pay_stub, "startDate"), now_minus_1y));
-
-        kyc
-    }
+    use crate::examples::{great_boy_pod_full_flow, zu_kyc_pod_builder, zu_kyc_sign_pod_builders};
 
     #[test]
-    fn test_front_0() -> Result<()> {
+    fn test_front_zu_kyc() -> Result<()> {
         let params = Params::default();
         let (gov_id, pay_stub) = zu_kyc_sign_pod_builders(&params);
 
@@ -621,6 +602,16 @@ pub mod tests {
 
         let kyc = zu_kyc_pod_builder(&params, &gov_id, &pay_stub);
         println!("{}", kyc);
+
+        // TODO: prove kyc with MockProver and print it
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_front_great_boy() -> Result<()> {
+        let great_boy = great_boy_pod_full_flow();
+        println!("{}", great_boy);
 
         // TODO: prove kyc with MockProver and print it
 
