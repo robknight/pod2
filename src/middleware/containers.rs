@@ -72,7 +72,13 @@ pub struct Set {
 
 impl Set {
     pub fn new(set: &Vec<Value>) -> Self {
-        let kvs: HashMap<Value, Value> = set
+        // In principle, sets are unordered. However, we sort the set to make
+        // the order deterministic, ensuring that two sets with the same elements
+        // will produce the same Merkle tree.
+        let mut sorted_set = set.clone();
+        sorted_set.sort();
+
+        let kvs: HashMap<Value, Value> = sorted_set
             .into_iter()
             .map(|e| {
                 let h = PoseidonHash::hash_no_pad(&e.0).elements;
