@@ -1,14 +1,32 @@
-use std::fmt;
 use std::sync::Arc;
+use std::{fmt, hash as h, iter::zip};
 
-use super::{hash_str, Hash, NativePredicate, ToFields, Value, F};
+use anyhow::{anyhow, Result};
+
+use super::{
+    hash_str, AnchoredKey, Hash, NativePredicate, PodId, Statement, StatementArg, ToFields, Value,
+    F,
+};
 
 // BEGIN Custom 1b
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, h::Hash)]
 pub enum HashOrWildcard {
     Hash(Hash),
     Wildcard(usize),
+}
+
+impl HashOrWildcard {
+    /// Matches a hash or wildcard against a value, returning a pair
+    /// representing a wildcard binding (if any) or an error if no
+    /// match is possible.
+    pub fn match_against(&self, v: &Value) -> Result<Option<(usize, Value)>> {
+        match self {
+            HashOrWildcard::Hash(h) if &Value::from(h.clone()) == v => Ok(None),
+            HashOrWildcard::Wildcard(i) => Ok(Some((*i, v.clone()))),
+            _ => Err(anyhow!("Failed to match {} against {}.", self, v)),
+        }
+    }
 }
 
 impl fmt::Display for HashOrWildcard {
@@ -20,11 +38,30 @@ impl fmt::Display for HashOrWildcard {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, h::Hash)]
 pub enum StatementTmplArg {
     None,
     Literal(Value),
     Key(HashOrWildcard, HashOrWildcard),
+}
+
+impl StatementTmplArg {
+    /// Matches a statement template argument against a statement
+    /// argument, returning a wildcard correspondence in the case of
+    /// one or more wildcard matches, nothing in the case of a
+    /// literal/hash match, and an error otherwise.
+    pub fn match_against(&self, s_arg: &StatementArg) -> Result<Vec<(usize, Value)>> {
+        match (self, s_arg) {
+            (Self::None, StatementArg::None) => Ok(vec![]),
+            (Self::Literal(v), StatementArg::Literal(w)) if v == w => Ok(vec![]),
+            (Self::Key(tmpl_o, tmpl_k), StatementArg::Key(AnchoredKey(PodId(o), k))) => {
+                let o_corr = tmpl_o.match_against(&o.clone().into())?;
+                let k_corr = tmpl_k.match_against(&k.clone().into())?;
+                Ok([o_corr, k_corr].into_iter().flat_map(|x| x).collect())
+            }
+            _ => Err(anyhow!("Failed to match {} against {}.", self, s_arg)),
+        }
+    }
 }
 
 impl fmt::Display for StatementTmplArg {
@@ -50,10 +87,37 @@ impl fmt::Display for StatementTmplArg {
 // END
 
 /// Statement Template for a Custom Predicate
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatementTmpl(pub Predicate, pub Vec<StatementTmplArg>);
 
-#[derive(Debug)]
+impl StatementTmpl {
+    pub fn pred(&self) -> &Predicate {
+        &self.0
+    }
+    pub fn args(&self) -> &[StatementTmplArg] {
+        &self.1
+    }
+    /// Matches a statement template against a statement, returning
+    /// the variable bindings as an association list. Returns an error
+    /// if there is type or argument mismatch.
+    pub fn match_against(&self, s: &Statement) -> Result<Vec<(usize, Value)>> {
+        type P = Predicate;
+        if matches!(self, Self(P::BatchSelf(_), _)) {
+            Err(anyhow!(
+                "Cannot check self-referencing statement templates."
+            ))
+        } else if self.pred() != &s.code() {
+            Err(anyhow!("Type mismatch between {:?} and {}.", self, s))
+        } else {
+            zip(self.args(), s.args())
+                .map(|(t_arg, s_arg)| t_arg.match_against(&s_arg))
+                .collect::<Result<Vec<_>>>()
+                .map(|v| v.concat())
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustomPredicate {
     /// true for "and", false for "or"
     pub conjunction: bool,
@@ -96,7 +160,7 @@ impl fmt::Display for CustomPredicate {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustomPredicateBatch {
     pub name: String,
     pub predicates: Vec<CustomPredicate>,
@@ -109,11 +173,14 @@ impl CustomPredicateBatch {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CustomPredicateRef(pub Arc<CustomPredicateBatch>, pub usize);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Predicate {
     Native(NativePredicate),
     BatchSelf(usize),
-    Custom(Arc<CustomPredicateBatch>, usize),
+    Custom(CustomPredicateRef),
 }
 
 impl From<NativePredicate> for Predicate {
@@ -127,7 +194,7 @@ impl ToFields for Predicate {
         match self {
             Self::Native(p) => p.to_fields(),
             Self::BatchSelf(i) => Value::from(i as i64).to_fields(),
-            Self::Custom(_pb, _i) => todo!(), // TODO
+            Self::Custom(_) => todo!(), // TODO
         }
     }
 }
@@ -137,7 +204,7 @@ impl fmt::Display for Predicate {
         match self {
             Self::Native(p) => write!(f, "{:?}", p),
             Self::BatchSelf(i) => write!(f, "self.{}", i),
-            Self::Custom(pb, i) => write!(f, "{}.{}", pb.name, i),
+            Self::Custom(CustomPredicateRef(pb, i)) => write!(f, "{}.{}", pb.name, i),
         }
     }
 }
