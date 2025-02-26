@@ -171,12 +171,15 @@ fn resolve_wildcard(args: &[&str], priv_args: &[&str], v: &HashOrWildcardStr) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::middleware::{CustomPredicateRef, PodType};
+    use crate::middleware::{CustomPredicateRef, Params, PodType};
 
     #[test]
     fn test_custom_pred() {
         use NativePredicate as NP;
         use StatementTmplBuilder as STB;
+
+        let params = Params::default();
+        params.print_serialized_sizes();
 
         let mut builder = CustomPredicateBatchBuilder::new("eth_friend".into());
         let _eth_friend = builder.predicate_and(
@@ -239,7 +242,7 @@ mod tests {
             builder.predicates.last().unwrap()
         );
 
-        let eth_dos_distance = Predicate::BatchSelf(3);
+        let eth_dos_distance = Predicate::BatchSelf(2);
 
         // next chunk builds:
         let eth_dos_distance_ind = builder.predicate_and(
@@ -311,5 +314,9 @@ mod tests {
             "b.2. eth_dos_distance = {}",
             builder.predicates.last().unwrap()
         );
+
+        let eth_dos_batch_b = builder.finish();
+        let fields = eth_dos_batch_b.to_fields(params);
+        println!("Batch b, serialized: {:?}", fields);
     }
 }
