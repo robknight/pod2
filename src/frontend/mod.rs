@@ -13,6 +13,7 @@ use crate::middleware::{
     hash_str, Hash, MainPodInputs, NativeOperation, NativePredicate, Params, PodId, PodProver,
     PodSigner, SELF,
 };
+use crate::middleware::{OperationType, Predicate};
 
 mod custom;
 mod operation;
@@ -254,7 +255,7 @@ impl MainPodBuilder {
         for arg in args.iter_mut() {
             match arg {
                 OperationArg::Statement(s) => {
-                    if s.0 == NativePredicate::ValueOf {
+                    if s.0 == Predicate::Native(NativePredicate::ValueOf) {
                         st_args.push(s.1[0].clone())
                     } else {
                         panic!("Invalid statement argument.");
@@ -266,7 +267,7 @@ impl MainPodBuilder {
                     let value_of_st = self.op(
                         public,
                         Operation(
-                            NativeOperation::NewEntry,
+                            OperationType::Native(NativeOperation::NewEntry),
                             vec![OperationArg::Entry(k.clone(), v.clone())],
                         ),
                     );
@@ -291,36 +292,49 @@ impl MainPodBuilder {
 
     pub fn op(&mut self, public: bool, mut op: Operation) -> Statement {
         use NativeOperation::*;
-        let Operation(op_type, ref mut args) = op;
+        let Operation(op_type, ref mut args) = &mut op;
         // TODO: argument type checking
         let st = match op_type {
-            None => Statement(NativePredicate::None, vec![]),
-            NewEntry => Statement(NativePredicate::ValueOf, self.op_args_entries(public, args)),
-            CopyStatement => todo!(),
-            EqualFromEntries => {
-                Statement(NativePredicate::Equal, self.op_args_entries(public, args))
-            }
-            NotEqualFromEntries => Statement(
-                NativePredicate::NotEqual,
-                self.op_args_entries(public, args),
-            ),
-            GtFromEntries => Statement(NativePredicate::Gt, self.op_args_entries(public, args)),
-            LtFromEntries => Statement(NativePredicate::Lt, self.op_args_entries(public, args)),
-            TransitiveEqualFromStatements => todo!(),
-            GtToNotEqual => todo!(),
-            LtToNotEqual => todo!(),
-            ContainsFromEntries => Statement(
-                NativePredicate::Contains,
-                self.op_args_entries(public, args),
-            ),
-            NotContainsFromEntries => Statement(
-                NativePredicate::NotContains,
-                self.op_args_entries(public, args),
-            ),
-            RenameContainedBy => todo!(),
-            SumOf => todo!(),
-            ProductOf => todo!(),
-            MaxOf => todo!(),
+            OperationType::Native(o) => match o {
+                None => Statement(Predicate::Native(NativePredicate::None), vec![]),
+                NewEntry => Statement(
+                    Predicate::Native(NativePredicate::ValueOf),
+                    self.op_args_entries(public, args),
+                ),
+                CopyStatement => todo!(),
+                EqualFromEntries => Statement(
+                    Predicate::Native(NativePredicate::Equal),
+                    self.op_args_entries(public, args),
+                ),
+                NotEqualFromEntries => Statement(
+                    Predicate::Native(NativePredicate::NotEqual),
+                    self.op_args_entries(public, args),
+                ),
+                GtFromEntries => Statement(
+                    Predicate::Native(NativePredicate::Gt),
+                    self.op_args_entries(public, args),
+                ),
+                LtFromEntries => Statement(
+                    Predicate::Native(NativePredicate::Lt),
+                    self.op_args_entries(public, args),
+                ),
+                TransitiveEqualFromStatements => todo!(),
+                GtToNotEqual => todo!(),
+                LtToNotEqual => todo!(),
+                ContainsFromEntries => Statement(
+                    Predicate::Native(NativePredicate::Contains),
+                    self.op_args_entries(public, args),
+                ),
+                NotContainsFromEntries => Statement(
+                    Predicate::Native(NativePredicate::NotContains),
+                    self.op_args_entries(public, args),
+                ),
+                RenameContainedBy => todo!(),
+                SumOf => todo!(),
+                ProductOf => todo!(),
+                MaxOf => todo!(),
+            },
+            _ => todo!(),
         };
         self.operations.push(op);
         if public {
@@ -440,7 +454,7 @@ impl MainPodCompiler {
 
     fn compile_op(&self, op: &Operation) -> middleware::Operation {
         // TODO
-        let mop_code: middleware::NativeOperation = op.0.into();
+        let mop_code: OperationType = op.0.clone();
         let mop_args =
             op.1.iter()
                 .flat_map(|arg| self.compile_op_arg(arg).map(|s| s.try_into().unwrap()))
@@ -496,22 +510,22 @@ pub mod build_utils {
     #[macro_export]
     macro_rules! op {
         (eq, $($arg:expr),+) => { crate::frontend::Operation(
-            crate::middleware::NativeOperation::EqualFromEntries,
+            crate::middleware::OperationType::Native(crate::middleware::NativeOperation::EqualFromEntries),
             crate::op_args!($($arg),*)) };
         (ne, $($arg:expr),+) => { crate::frontend::Operation(
-            crate::middleware::NativeOperation::NotEqualFromEntries,
+            crate::middleware::OperationType::Native(crate::middleware::NativeOperation::NotEqualFromEntries),
             crate::op_args!($($arg),*)) };
         (gt, $($arg:expr),+) => { crate::frontend::Operation(
-            crate::middleware::NativeOperation::GtFromEntries,
+            crate::middleware::OperationType::Native(crate::middleware::NativeOperation::GtFromEntries),
             crate::op_args!($($arg),*)) };
         (lt, $($arg:expr),+) => { crate::frontend::Operation(
-            crate::middleware::NativeOperation::LtFromEntries,
+            crate::middleware::OperationType::Native(crate::middleware::NativeOperation::LtFromEntries),
             crate::op_args!($($arg),*)) };
         (contains, $($arg:expr),+) => { crate::frontend::Operation(
-            crate::middleware::NativeOperation::ContainsFromEntries,
+            crate::middleware::OperationType::Native(crate::middleware::NativeOperation::ContainsFromEntries),
             crate::op_args!($($arg),*)) };
         (not_contains, $($arg:expr),+) => { crate::frontend::Operation(
-            crate::middleware::NativeOperation::NotContainsFromEntries,
+            crate::middleware::OperationType::Native(crate::middleware::NativeOperation::NotContainsFromEntries),
             crate::op_args!($($arg),*)) };
     }
 }
