@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::iter::IntoIterator;
 
-use crate::middleware::{Hash, Value, F, NULL};
+use crate::backends::plonky2::basetypes::{Hash, Value, F, NULL};
 
 /// Implements the MerkleTree specified at
 /// https://0xparc.github.io/pod2/merkletree.html
@@ -37,6 +37,7 @@ impl MerkleTree {
         self.root.hash()
     }
 
+    /// returns the max_depth parameter from the tree
     pub fn max_depth(&self) -> usize {
         self.max_depth
     }
