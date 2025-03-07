@@ -1,7 +1,7 @@
 //! The frontend includes the user-level abstractions and user-friendly types to define and work
 //! with Pods.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::convert::From;
@@ -80,6 +80,17 @@ impl From<&Value> for middleware::Value {
 impl From<middleware::Value> for Value {
     fn from(v: middleware::Value) -> Self {
         Self::Raw(v)
+    }
+}
+
+impl TryInto<i64> for Value {
+    type Error = Error;
+    fn try_into(self) -> std::result::Result<i64, Self::Error> {
+        if let Value::Int(n) = self {
+            Ok(n)
+        } else {
+            Err(anyhow!("Value not an int"))
+        }
     }
 }
 
@@ -317,6 +328,7 @@ impl MainPodBuilder {
                         panic!("Invalid statement argument.");
                     }
                 }
+                // todo: better error handling
                 OperationArg::Literal(v) => {
                     let k = format!("c{}", self.const_cnt);
                     self.const_cnt += 1;
@@ -354,45 +366,226 @@ impl MainPodBuilder {
         use NativeOperation::*;
         let Operation(op_type, ref mut args) = &mut op;
         // TODO: argument type checking
-        let st = match op_type {
+        let pred = op_type
+            .output_predicate()
+            .map(|p| Ok(p))
+            .unwrap_or_else(|| {
+                // We are dealing with a copy here.
+                match (&args).get(0) {
+                    Some(OperationArg::Statement(s)) if args.len() == 1 => Ok(s.0.clone()),
+                    _ => Err(anyhow!("Invalid arguments to copy operation: {:?}", args)),
+                }
+            })?;
+
+        let st_args: Vec<StatementArg> = match op_type {
             OperationType::Native(o) => match o {
-                None => Statement(Predicate::Native(NativePredicate::None), vec![]),
-                NewEntry => Statement(
-                    Predicate::Native(NativePredicate::ValueOf),
-                    self.op_args_entries(public, args)?,
-                ),
-                CopyStatement => todo!(),
-                EqualFromEntries => Statement(
-                    Predicate::Native(NativePredicate::Equal),
-                    self.op_args_entries(public, args)?,
-                ),
-                NotEqualFromEntries => Statement(
-                    Predicate::Native(NativePredicate::NotEqual),
-                    self.op_args_entries(public, args)?,
-                ),
-                GtFromEntries => Statement(
-                    Predicate::Native(NativePredicate::Gt),
-                    self.op_args_entries(public, args)?,
-                ),
-                LtFromEntries => Statement(
-                    Predicate::Native(NativePredicate::Lt),
-                    self.op_args_entries(public, args)?,
-                ),
-                TransitiveEqualFromStatements => todo!(),
-                GtToNotEqual => todo!(),
-                LtToNotEqual => todo!(),
-                ContainsFromEntries => Statement(
-                    Predicate::Native(NativePredicate::Contains),
-                    self.op_args_entries(public, args)?,
-                ),
-                NotContainsFromEntries => Statement(
-                    Predicate::Native(NativePredicate::NotContains),
-                    self.op_args_entries(public, args)?,
-                ),
-                RenameContainedBy => todo!(),
-                SumOf => todo!(),
-                ProductOf => todo!(),
-                MaxOf => todo!(),
+                None => vec![],
+                NewEntry => self.op_args_entries(public, args)?,
+                CopyStatement => match &args[0] {
+                    OperationArg::Statement(s) => s.1.clone(),
+                    _ => {
+                        return Err(anyhow!("Invalid arguments to operation: {}", op));
+                    }
+                },
+                EqualFromEntries => self.op_args_entries(public, args)?,
+                NotEqualFromEntries => self.op_args_entries(public, args)?,
+                GtFromEntries => self.op_args_entries(public, args)?,
+                LtFromEntries => self.op_args_entries(public, args)?,
+                TransitiveEqualFromStatements => {
+                    match (args[0].clone(), args[1].clone()) {
+                        (
+                            OperationArg::Statement(Statement(
+                                Predicate::Native(NativePredicate::Equal),
+                                st0_args,
+                            )),
+                            OperationArg::Statement(Statement(
+                                Predicate::Native(NativePredicate::Equal),
+                                st1_args,
+                            )),
+                        ) => {
+                            // st_args0 == vec![ak0, ak1]
+                            // st_args1 == vec![ak1, ak2]
+                            // output statement Equals(ak0, ak2)
+                            if st0_args[1] == st1_args[0] {
+                                vec![st0_args[0].clone(), st1_args[1].clone()]
+                            } else {
+                                return Err(anyhow!("Invalid arguments to operation"));
+                            }
+                        }
+                        _ => {
+                            return Err(anyhow!("Invalid arguments to operation"));
+                        }
+                    }
+                }
+                GtToNotEqual => match args[0].clone() {
+                    OperationArg::Statement(Statement(
+                        Predicate::Native(NativePredicate::Gt),
+                        st_args,
+                    )) => {
+                        vec![st_args[0].clone()]
+                    }
+                    _ => {
+                        return Err(anyhow!("Invalid arguments to operation"));
+                    }
+                },
+                LtToNotEqual => match args[0].clone() {
+                    OperationArg::Statement(Statement(
+                        Predicate::Native(NativePredicate::Lt),
+                        st_args,
+                    )) => {
+                        vec![st_args[0].clone()]
+                    }
+                    _ => {
+                        return Err(anyhow!("Invalid arguments to operation"));
+                    }
+                },
+                ContainsFromEntries => self.op_args_entries(public, args)?,
+                NotContainsFromEntries => self.op_args_entries(public, args)?,
+                SumOf => match (args[0].clone(), args[1].clone(), args[2].clone()) {
+                    (
+                        OperationArg::Statement(Statement(
+                            Predicate::Native(NativePredicate::ValueOf),
+                            st0_args,
+                        )),
+                        OperationArg::Statement(Statement(
+                            Predicate::Native(NativePredicate::ValueOf),
+                            st1_args,
+                        )),
+                        OperationArg::Statement(Statement(
+                            Predicate::Native(NativePredicate::ValueOf),
+                            st2_args,
+                        )),
+                    ) => {
+                        let st_args: Vec<StatementArg> = match (
+                            st0_args[1].clone(),
+                            st1_args[1].clone(),
+                            st2_args[1].clone(),
+                        ) {
+                            (
+                                StatementArg::Literal(v0),
+                                StatementArg::Literal(v1),
+                                StatementArg::Literal(v2),
+                            ) => {
+                                let v0: i64 = v0.clone().try_into()?;
+                                let v1: i64 = v1.clone().try_into()?;
+                                let v2: i64 = v2.clone().try_into()?;
+                                if v0 == v1 + v2 {
+                                    vec![
+                                        st0_args[0].clone(),
+                                        st1_args[0].clone(),
+                                        st2_args[0].clone(),
+                                    ]
+                                } else {
+                                    return Err(anyhow!("Invalid arguments to operation"));
+                                }
+                            }
+                            _ => {
+                                return Err(anyhow!("Invalid arguments to operation"));
+                            }
+                        };
+                        st_args
+                    }
+                    _ => {
+                        return Err(anyhow!("Invalid arguments to operation"));
+                    }
+                },
+                ProductOf => match (args[0].clone(), args[1].clone(), args[2].clone()) {
+                    (
+                        OperationArg::Statement(Statement(
+                            Predicate::Native(NativePredicate::ValueOf),
+                            st0_args,
+                        )),
+                        OperationArg::Statement(Statement(
+                            Predicate::Native(NativePredicate::ValueOf),
+                            st1_args,
+                        )),
+                        OperationArg::Statement(Statement(
+                            Predicate::Native(NativePredicate::ValueOf),
+                            st2_args,
+                        )),
+                    ) => {
+                        let st_args: Vec<StatementArg> = match (
+                            st0_args[1].clone(),
+                            st1_args[1].clone(),
+                            st2_args[1].clone(),
+                        ) {
+                            (
+                                StatementArg::Literal(v0),
+                                StatementArg::Literal(v1),
+                                StatementArg::Literal(v2),
+                            ) => {
+                                let v0: i64 = v0.clone().try_into()?;
+                                let v1: i64 = v1.clone().try_into()?;
+                                let v2: i64 = v2.clone().try_into()?;
+                                if v0 == v1 * v2 {
+                                    vec![
+                                        st0_args[0].clone(),
+                                        st1_args[0].clone(),
+                                        st2_args[0].clone(),
+                                    ]
+                                } else {
+                                    return Err(anyhow!("Invalid arguments to operation"));
+                                }
+                            }
+                            _ => {
+                                return Err(anyhow!("Invalid arguments to operation"));
+                            }
+                        };
+                        st_args
+                    }
+                    _ => {
+                        return Err(anyhow!("Invalid arguments to operation"));
+                    }
+                },
+                MaxOf => match (args[0].clone(), args[1].clone(), args[2].clone()) {
+                    (
+                        OperationArg::Statement(Statement(
+                            Predicate::Native(NativePredicate::ValueOf),
+                            st0_args,
+                        )),
+                        OperationArg::Statement(Statement(
+                            Predicate::Native(NativePredicate::ValueOf),
+                            st1_args,
+                        )),
+                        OperationArg::Statement(Statement(
+                            Predicate::Native(NativePredicate::ValueOf),
+                            st2_args,
+                        )),
+                    ) => {
+                        let st_args: Vec<StatementArg> = match (
+                            st0_args[1].clone(),
+                            st1_args[1].clone(),
+                            st2_args[1].clone(),
+                        ) {
+                            (
+                                StatementArg::Literal(v0),
+                                StatementArg::Literal(v1),
+                                StatementArg::Literal(v2),
+                            ) => {
+                                let v0: i64 = v0.clone().try_into()?;
+                                let v1: i64 = v1.clone().try_into()?;
+                                let v2: i64 = v2.clone().try_into()?;
+                                if v0 == std::cmp::max(v1, v2) {
+                                    vec![
+                                        st0_args[0].clone(),
+                                        st1_args[0].clone(),
+                                        st2_args[0].clone(),
+                                    ]
+                                } else {
+                                    return Err(anyhow!("Invalid arguments to operation"));
+                                }
+                            }
+                            _ => {
+                                return Err(anyhow!("Invalid arguments to operation"));
+                            }
+                        };
+                        st_args
+                    }
+                    RenameContainedBy => todo!(),
+                    _ => {
+                        return Err(anyhow!("Invalid arguments to operation"));
+                    }
+                },
             },
             OperationType::Custom(cpr) => {
                 // All args should be statements to be pattern matched against statement templates.
@@ -413,7 +606,8 @@ impl MainPodBuilder {
                         ))
                     })
                     .collect::<Result<Vec<_>>>()?;
-                let output_args = output_arg_values
+
+                output_arg_values
                     .chunks(2)
                     .map(|chunk| {
                         Ok(StatementArg::Key(AnchoredKey(
@@ -430,10 +624,10 @@ impl MainPodBuilder {
                                 .ok_or(anyhow!("Missing key corresponding to hash."))?,
                         )))
                     })
-                    .collect::<Result<Vec<_>>>()?;
-                Statement(Predicate::Custom(cpr.clone()), output_args)
+                    .collect::<Result<Vec<_>>>()?
             }
         };
+        let st = Statement(pred, st_args);
         self.operations.push(op);
         if public {
             self.public_statements.push(st.clone());
@@ -679,8 +873,8 @@ pub mod build_utils {
             $crate::middleware::OperationType::Native($crate::middleware::NativeOperation::EqualFromEntries),
             $crate::op_args!($($arg),*)) };
         (ne, $($arg:expr),+) => { $crate::frontend::Operation(
-            $crate::middleware::OperationType::Native(crate::middleware::NativeOperation::NotEqualFromEntries),
-            crate::op_args!($($arg),*)) };
+            $crate::middleware::OperationType::Native($crate::middleware::NativeOperation::NotEqualFromEntries),
+            $crate::op_args!($($arg),*)) };
         (gt, $($arg:expr),+) => { crate::frontend::Operation(
             crate::middleware::OperationType::Native(crate::middleware::NativeOperation::GtFromEntries),
             crate::op_args!($($arg),*)) };
@@ -828,6 +1022,54 @@ pub mod tests {
         println!("{}", builder);
 
         Ok(())
+    }
+
+    #[test]
+    // Transitive equality not implemented yet
+    #[should_panic]
+    fn test_equal() {
+        let params = Params::default();
+        let mut signed_builder = SignedPodBuilder::new(&params);
+        signed_builder.insert("a", 1);
+        signed_builder.insert("b", 1);
+        let mut signer = MockSigner { pk: "key".into() };
+        let signed_pod = signed_builder.sign(&mut signer).unwrap();
+
+        let mut builder = MainPodBuilder::new(&params);
+        builder.add_signed_pod(&signed_pod);
+
+        //let op_val1 = Operation{
+        //    OperationType::Native(NativeOperation::CopyStatement),
+        //    signed_pod.
+        //}
+
+        let op_eq1 = Operation(
+            OperationType::Native(NativeOperation::EqualFromEntries),
+            vec![
+                OperationArg::from((&signed_pod, "a")),
+                OperationArg::from((&signed_pod, "b")),
+            ],
+        );
+        let st1 = builder.op(true, op_eq1).unwrap();
+        let op_eq2 = Operation(
+            OperationType::Native(NativeOperation::EqualFromEntries),
+            vec![
+                OperationArg::from((&signed_pod, "b")),
+                OperationArg::from((&signed_pod, "a")),
+            ],
+        );
+        let st2 = builder.op(true, op_eq2).unwrap();
+
+        let op_eq3 = Operation(
+            OperationType::Native(NativeOperation::TransitiveEqualFromStatements),
+            vec![OperationArg::Statement(st1), OperationArg::Statement(st2)],
+        );
+        let st3 = builder.op(true, op_eq3);
+
+        let mut prover = MockProver {};
+        let pod = builder.prove(&mut prover, &params).unwrap();
+
+        println!("{}", pod);
     }
 
     #[test]
