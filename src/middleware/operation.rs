@@ -1,6 +1,7 @@
 use std::fmt;
 
 use anyhow::{anyhow, Result};
+use log::error;
 
 use super::{CustomPredicateRef, NativePredicate, Statement, StatementArg};
 use crate::middleware::{AnchoredKey, Params, Predicate, Value, SELF};
@@ -307,6 +308,15 @@ impl Operation {
             .zip(st_args)
             .map(|(pred, st_args)| Statement::from_args(pred, st_args));
         x.transpose()
+    }
+    /// Checks the given operation against a statement, and prints information if the check does not pass
+    pub fn check_and_log(&self, params: &Params, output_statement: &Statement) -> Result<bool> {
+        let valid: bool = self.check(params, output_statement)?;
+        if !valid {
+            error!("Check failed on the following statement");
+            error!("{}", output_statement);
+        }
+        Ok(valid)
     }
     /// Checks the given operation against a statement.
     pub fn check(&self, _params: &Params, output_statement: &Statement) -> Result<bool> {
