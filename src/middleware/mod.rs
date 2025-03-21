@@ -5,14 +5,17 @@ mod basetypes;
 pub mod containers;
 mod custom;
 mod operation;
+pub mod serialization;
 mod statement;
 pub use basetypes::*;
 pub use custom::*;
 pub use operation::*;
+use schemars::JsonSchema;
 pub use statement::*;
 
 use anyhow::Result;
 use dyn_clone::DynClone;
+use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
@@ -32,7 +35,7 @@ impl fmt::Display for PodId {
 }
 
 /// AnchoredKey is a tuple containing (OriginId: PodId, key: Hash)
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct AnchoredKey(pub PodId, pub Hash);
 
 impl AnchoredKey {
@@ -54,7 +57,7 @@ impl fmt::Display for AnchoredKey {
 /// An entry consists of a key-value pair.
 pub type Entry = (String, Value);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
 pub struct PodId(pub Hash);
 
 impl ToFields for PodId {
@@ -77,7 +80,7 @@ impl From<PodType> for Value {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Params {
     pub max_input_signed_pods: usize,
     pub max_input_main_pods: usize,
@@ -166,6 +169,15 @@ pub trait Pod: fmt::Debug + DynClone {
     }
     // Used for downcasting
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
+    // Front-end Pods keep references to middleware Pods. Most of the
+    // middleware data can be derived directly from front-end data, but the
+    // "proof" data is only created at the point of proving/signing, and
+    // cannot be reconstructed. As such, we need to serialize it whenever
+    // we serialize a front-end Pod. Since the front-end does not understand
+    // the implementation details of the middleware, this method allows the
+    // middleware to provide some serialized data that can be used to
+    // reconstruct the proof.
+    fn serialized_proof(&self) -> String;
 }
 
 // impl Clone for Box<dyn SignedPod>
@@ -192,6 +204,9 @@ impl Pod for NonePod {
     }
     fn into_any(self: Box<Self>) -> Box<dyn Any> {
         self
+    }
+    fn serialized_proof(&self) -> String {
+        "".to_string()
     }
 }
 
