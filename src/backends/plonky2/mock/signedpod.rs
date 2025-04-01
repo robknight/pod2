@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use itertools::Itertools;
 use std::any::Any;
 use std::collections::HashMap;
 
@@ -104,8 +105,15 @@ impl Pod for MockSignedPod {
 
     fn pub_statements(&self) -> Vec<Statement> {
         let id = self.id();
-        self.dict
-            .iter()
+        // By convention we put the KEY_TYPE first and KEY_SIGNER second
+        let mut kvs: HashMap<_, _> = self.dict.iter().collect();
+        let key_type = Value::from(hash_str(KEY_TYPE));
+        let value_type = kvs.remove(&key_type).expect("KEY_TYPE");
+        let key_signer = Value::from(hash_str(KEY_SIGNER));
+        let value_signer = kvs.remove(&key_signer).expect("KEY_SIGNER");
+        [(&key_type, value_type), (&key_signer, value_signer)]
+            .into_iter()
+            .chain(kvs.into_iter().sorted_by_key(|kv| kv.0))
             .map(|(k, v)| Statement::ValueOf(AnchoredKey(id, Hash(k.0)), *v))
             .collect()
     }

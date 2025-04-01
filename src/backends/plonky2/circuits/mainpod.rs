@@ -1,28 +1,16 @@
 use anyhow::Result;
-use itertools::Itertools;
+use itertools::zip_eq;
 use plonky2::{
-    field::types::Field,
-    hash::{
-        hash_types::{HashOut, HashOutTarget},
-        poseidon::PoseidonHash,
-    },
-    iop::{
-        target::{BoolTarget, Target},
-        witness::{PartialWitness, WitnessWrite},
-    },
+    hash::{hash_types::HashOutTarget, poseidon::PoseidonHash},
+    iop::{target::BoolTarget, witness::PartialWitness},
     plonk::circuit_builder::CircuitBuilder,
 };
-use std::collections::HashMap;
-use std::iter;
 
-use crate::backends::plonky2::basetypes::{Hash, Value, D, EMPTY_HASH, EMPTY_VALUE, F, VALUE_SIZE};
+use crate::backends::plonky2::basetypes::{Value, D, EMPTY_HASH, F, VALUE_SIZE};
 use crate::backends::plonky2::circuits::common::{
     CircuitBuilderPod, OperationTarget, StatementTarget, ValueTarget,
 };
-use crate::backends::plonky2::primitives::merkletree::MerkleTree;
-use crate::backends::plonky2::primitives::merkletree::{
-    MerkleProofExistenceGadget, MerkleProofExistenceTarget,
-};
+use crate::backends::plonky2::mock::mainpod;
 use crate::backends::plonky2::signedpod::SignedPod;
 use crate::middleware::{
     hash_str, AnchoredKey, NativeOperation, NativePredicate, Params, PodType, Statement,
@@ -118,18 +106,20 @@ impl OperationVerifyGadget {
 
         // The values embedded in the op args must match, the last
         // `STATEMENT_ARG_F_LEN - VALUE_SIZE` slots of each being 0.
-        let arg1_value = resolved_op_args[0].args[1];
-        let arg2_value = resolved_op_args[1].args[1];
+        let arg1_value = &resolved_op_args[0].args[1];
+        let arg2_value = &resolved_op_args[1].args[1];
         let op_arg_range_checks = [
-            builder.statement_arg_is_value(&arg1_value),
-            builder.statement_arg_is_value(&arg2_value),
+            builder.statement_arg_is_value(arg1_value),
+            builder.statement_arg_is_value(arg2_value),
         ];
         let op_arg_range_ok = builder.all(op_arg_range_checks);
-        let op_args_eq =
-            builder.is_equal_slice(&arg1_value[..VALUE_SIZE], &arg2_value[..VALUE_SIZE]);
+        let op_args_eq = builder.is_equal_slice(
+            &arg1_value.elements[..VALUE_SIZE],
+            &arg2_value.elements[..VALUE_SIZE],
+        );
 
-        let arg1_key = resolved_op_args[0].args[0];
-        let arg2_key = resolved_op_args[1].args[0];
+        let arg1_key = resolved_op_args[0].args[0].clone();
+        let arg2_key = resolved_op_args[1].args[0].clone();
         let expected_statement = StatementTarget::new_native(
             builder,
             &self.params,
@@ -167,21 +157,21 @@ impl OperationVerifyGadget {
         // The values embedded in the op args must satisfy `<`, the
         // last `STATEMENT_ARG_F_LEN - VALUE_SIZE` slots of each being
         // 0.
-        let arg1_value = resolved_op_args[0].args[1];
-        let arg2_value = resolved_op_args[1].args[1];
-        let op_arg_range_checks = [&arg1_value, &arg2_value]
+        let arg1_value = &resolved_op_args[0].args[1];
+        let arg2_value = &resolved_op_args[1].args[1];
+        let op_arg_range_checks = [arg1_value, arg2_value]
             .into_iter()
             .map(|x| builder.statement_arg_is_value(x))
             .collect::<Vec<_>>();
         let op_arg_range_ok = builder.all(op_arg_range_checks);
         builder.assert_less_if(
             op_code_ok,
-            ValueTarget::from_slice(&arg1_value[..VALUE_SIZE]),
-            ValueTarget::from_slice(&arg2_value[..VALUE_SIZE]),
+            ValueTarget::from_slice(&arg1_value.elements[..VALUE_SIZE]),
+            ValueTarget::from_slice(&arg2_value.elements[..VALUE_SIZE]),
         );
 
-        let arg1_key = resolved_op_args[0].args[0];
-        let arg2_key = resolved_op_args[1].args[0];
+        let arg1_key = resolved_op_args[0].args[0].clone();
+        let arg2_key = resolved_op_args[1].args[0].clone();
         let expected_statement = StatementTarget::new_native(
             builder,
             &self.params,
@@ -222,14 +212,17 @@ impl OperationVerifyGadget {
         let expected_arg_prefix = builder.constants(
             &StatementArg::Key(AnchoredKey(SELF, EMPTY_HASH)).to_fields(&self.params)[..VALUE_SIZE],
         );
-        let arg_prefix_ok = builder.is_equal_slice(&st.args[0][..VALUE_SIZE], &expected_arg_prefix);
+        let arg_prefix_ok =
+            builder.is_equal_slice(&st.args[0].elements[..VALUE_SIZE], &expected_arg_prefix);
 
         let dupe_check = {
             let individual_checks = prev_statements
                 .into_iter()
-                .map(|ps| {
+                .enumerate()
+                .map(|(i, ps)| {
                     let same_predicate = builder.is_equal_slice(&st.predicate, &ps.predicate);
-                    let same_anchored_key = builder.is_equal_slice(&st.args[0], &ps.args[0]);
+                    let same_anchored_key =
+                        builder.is_equal_slice(&st.args[0].elements, &ps.args[0].elements);
                     builder.and(same_predicate, same_anchored_key)
                 })
                 .collect::<Vec<_>>();
@@ -292,7 +285,22 @@ impl MainPodVerifyGadget {
         // Build the statement array
         let mut statements = Vec::new();
         for signed_pod in &signed_pods {
-            statements.extend_from_slice(signed_pod.pub_statements().as_slice());
+            statements.extend_from_slice(signed_pod.pub_statements(builder, false).as_slice());
+        }
+        debug_assert_eq!(
+            statements.len(),
+            self.params.max_input_signed_pods * self.params.max_signed_pod_values
+        );
+        // TODO: Fill with input main pods
+        for _main_pod in 0..self.params.max_input_main_pods {
+            for _statement in 0..self.params.max_public_statements {
+                statements.push(StatementTarget::new_native(
+                    builder,
+                    &self.params,
+                    NativePredicate::None,
+                    &[],
+                ))
+            }
         }
 
         // Add the input (private and public) statements and corresponding operations
@@ -304,18 +312,21 @@ impl MainPodVerifyGadget {
         }
 
         let input_statements = &statements[input_statements_offset..];
-        let pub_statements = &input_statements[statements.len() - params.max_public_statements..];
+        let pub_statements =
+            &input_statements[input_statements.len() - params.max_public_statements..];
 
         // 2. Calculate the Pod Id from the public statements
         let pub_statements_flattened = pub_statements
             .iter()
-            .map(|s| s.predicate.iter().chain(s.args.iter().flatten()))
+            .map(|s| {
+                s.predicate
+                    .iter()
+                    .chain(s.args.iter().flat_map(|a| &a.elements))
+            })
             .flatten()
             .cloned()
             .collect();
         let id = builder.hash_n_to_hash_no_pad::<PoseidonHash>(pub_statements_flattened);
-
-        // 3. TODO check that all `input_statements` of type `ValueOf` with origin=SELF have unique keys (no duplicates).  Maybe we can do this via the NewEntry operation (check that the key doesn't exist in a previous statement with ID=SELF)
 
         // 4. Verify type
         let type_statement = &pub_statements[0];
@@ -330,10 +341,12 @@ impl MainPodVerifyGadget {
         );
         builder.connect_flattenable(type_statement, &expected_type_statement);
 
+        // 3. check that all `input_statements` of type `ValueOf` with origin=SELF have unique keys
+        // (no duplicates).  We do this in the verification of NewEntry operation.
         // 5. Verify input statements
         let mut op_verifications = Vec::new();
         for (i, (st, op)) in input_statements.iter().zip(operations.iter()).enumerate() {
-            let prev_statements = &statements[..input_statements_offset + i - 1];
+            let prev_statements = &statements[..input_statements_offset + i];
             let op_verification = OperationVerifyGadget {
                 params: params.clone(),
             }
@@ -352,7 +365,7 @@ impl MainPodVerifyGadget {
     }
 }
 
-struct MainPodVerifyTarget {
+pub struct MainPodVerifyTarget {
     params: Params,
     id: HashOutTarget,
     signed_pods: Vec<SignedPodVerifyTarget>,
@@ -362,25 +375,33 @@ struct MainPodVerifyTarget {
     op_verifications: Vec<OperationVerifyTarget>,
 }
 
-struct MainPodVerifyInput {
-    signed_pods: Vec<SignedPod>,
+pub struct MainPodVerifyInput {
+    pub signed_pods: Vec<SignedPod>,
+    pub statements: Vec<mainpod::Statement>,
+    pub operations: Vec<mainpod::Operation>,
 }
 
 impl MainPodVerifyTarget {
-    fn set_targets(&self, pw: &mut PartialWitness<F>, input: &MainPodVerifyInput) -> Result<()> {
+    pub fn set_targets(
+        &self,
+        pw: &mut PartialWitness<F>,
+        input: &MainPodVerifyInput,
+    ) -> Result<()> {
         assert!(input.signed_pods.len() <= self.params.max_input_signed_pods);
         for (i, signed_pod) in input.signed_pods.iter().enumerate() {
             self.signed_pods[i].set_targets(pw, signed_pod)?;
         }
         // Padding
+        // TODO: Instead of using an input for padding, use a canonical minimal SignedPod
+        let pad_pod = &input.signed_pods[0];
         for i in input.signed_pods.len()..self.params.max_input_signed_pods {
-            // TODO: We need to disable the verification for the unused slots.
-            // self.signed_pods[i].set_targets(pw, signed_pod)?;
+            self.signed_pods[i].set_targets(pw, pad_pod)?;
         }
-        // TODO: set_targets for:
-        // - statements
-        // - operations
-        // - op_verifications
+        assert_eq!(input.statements.len(), self.params.max_statements);
+        for (i, (st, op)) in zip_eq(&input.statements, &input.operations).enumerate() {
+            self.statements[i].set_targets(pw, &self.params, st)?;
+            self.operations[i].set_targets(pw, &self.params, op)?;
+        }
         Ok(())
     }
 }
@@ -470,30 +491,38 @@ mod tests {
         // NewEntry
         let st1: mainpod::Statement =
             Statement::ValueOf(AnchoredKey(SELF, "hello".into()), 55.into()).into();
-        let op = mainpod::Operation(
-            OperationType::Native(NativeOperation::NewEntry),
-            vec![],
-            OperationAux::None,
-        );
-        operation_verify(st1.clone(), op, vec![])?;
-
-        // Copy
-        let op = mainpod::Operation(
-            OperationType::Native(NativeOperation::CopyStatement),
-            vec![OperationArg::Index(0)],
-            OperationAux::None,
-        );
-        operation_verify(st, op, prev_statements)?;
-
-        // Eq
         let st2: mainpod::Statement = Statement::ValueOf(
             AnchoredKey(PodId(Value::from(75).into()), "hello".into()),
             55.into(),
         )
         .into();
+        let prev_statements = vec![st2];
+        let op = mainpod::Operation(
+            OperationType::Native(NativeOperation::NewEntry),
+            vec![],
+            OperationAux::None,
+        );
+        operation_verify(st1.clone(), op, prev_statements.clone())?;
+
+        // Copy
+        let st: mainpod::Statement = Statement::None.into();
+        let op = mainpod::Operation(
+            OperationType::Native(NativeOperation::CopyStatement),
+            vec![OperationArg::Index(0)],
+            OperationAux::None,
+        );
+        let prev_statements = vec![Statement::None.into()];
+        operation_verify(st, op, prev_statements)?;
+
+        // Eq
+        let st2: mainpod::Statement = Statement::ValueOf(
+            AnchoredKey(PodId(Value::from(75).into()), "world".into()),
+            55.into(),
+        )
+        .into();
         let st: mainpod::Statement = Statement::Equal(
             AnchoredKey(SELF, "hello".into()),
-            AnchoredKey(PodId(Value::from(75).into()), "hello".into()),
+            AnchoredKey(PodId(Value::from(75).into()), "world".into()),
         )
         .into();
         let op = mainpod::Operation(

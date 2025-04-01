@@ -12,8 +12,8 @@ use crate::{
     backends::plonky2::primitives::merkletree::MerkleProof,
     middleware::{
         self, hash_str, AnchoredKey, Hash, MainPodInputs, NativeOperation, NativePredicate,
-        NonePod, OperationType, Params, Pod, PodId, PodProver, Predicate, StatementArg, ToFields,
-        KEY_TYPE, SELF,
+        NonePod, OperationType, Params, Pod, PodId, PodProver, PodType, Predicate, StatementArg,
+        ToFields, KEY_TYPE, SELF,
     },
 };
 
@@ -21,8 +21,6 @@ mod operation;
 mod statement;
 pub use operation::*;
 pub use statement::*;
-
-pub const VALUE_TYPE: &str = "MockMainPOD";
 
 pub struct MockProver {}
 
@@ -67,7 +65,7 @@ impl fmt::Display for MockMainPod {
             }
             if (i >= offset_input_main_pods)
                 && (i < offset_input_statements)
-                && (i % self.params.max_public_statements == 0)
+                && ((i - offset_input_main_pods) % self.params.max_public_statements == 0)
             {
                 writeln!(
                     f,
@@ -116,7 +114,7 @@ fn fmt_statement_index(
     Ok(())
 }
 
-fn fill_pad<T: Clone>(v: &mut Vec<T>, pad_value: T, len: usize) {
+pub fn fill_pad<T: Clone>(v: &mut Vec<T>, pad_value: T, len: usize) {
     if v.len() > len {
         panic!("length exceeded");
     }
@@ -153,7 +151,7 @@ impl MockMainPod {
 
     /// Returns the statements from the given MainPodInputs, padding to the
     /// respective max lengths defined at the given Params.
-    fn layout_statements(params: &Params, inputs: &MainPodInputs) -> Vec<Statement> {
+    pub(crate) fn layout_statements(params: &Params, inputs: &MainPodInputs) -> Vec<Statement> {
         let mut statements = Vec::new();
 
         // Input signed pods region
@@ -209,7 +207,7 @@ impl MockMainPod {
         assert!(inputs.public_statements.len() < params.max_public_statements);
         let mut type_st = middleware::Statement::ValueOf(
             AnchoredKey(SELF, hash_str(KEY_TYPE)),
-            middleware::Value(hash_str(VALUE_TYPE).0),
+            middleware::Value::from(PodType::MockMain),
         )
         .into();
         Self::pad_statement(params, &mut type_st);
@@ -267,7 +265,7 @@ impl MockMainPod {
         }
     }
 
-    fn process_private_statements_operations(
+    pub(crate) fn process_private_statements_operations(
         params: &Params,
         statements: &[Statement],
         merkle_proofs: &[MerkleProof],
@@ -298,7 +296,7 @@ impl MockMainPod {
     // previous statements, so we fill in the operations accordingly.
     /// This method assumes that the given `statements` array has been padded to
     /// `params.max_statements`.
-    fn process_public_statements_operations(
+    pub(crate) fn process_public_statements_operations(
         params: &Params,
         statements: &[Statement],
         mut operations: Vec<Operation>,
@@ -526,6 +524,7 @@ impl Pod for MockMainPod {
     }
     fn pub_statements(&self) -> Vec<middleware::Statement> {
         // return the public statements, where when origin=SELF is replaced by origin=self.id()
+        // By convention we expect the KEY_TYPE to be the first statement
         self.statements
             .iter()
             .skip(self.offset_public_statements())

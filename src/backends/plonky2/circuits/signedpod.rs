@@ -2,20 +2,24 @@ use anyhow::Result;
 use itertools::Itertools;
 use plonky2::{
     hash::hash_types::{HashOut, HashOutTarget},
+    iop::target::Target,
     iop::witness::{PartialWitness, WitnessWrite},
     plonk::circuit_builder::CircuitBuilder,
 };
+use std::iter;
 
 use crate::backends::plonky2::{
     basetypes::{Value, D, EMPTY_VALUE, F},
-    circuits::common::{CircuitBuilderPod, StatementTarget, ValueTarget},
+    circuits::common::{CircuitBuilderPod, StatementArgTarget, StatementTarget, ValueTarget},
     primitives::{
         merkletree::{MerkleProof, MerkleProofExistenceGadget, MerkleProofExistenceTarget},
         signature::{PublicKey, SignatureVerifyGadget, SignatureVerifyTarget},
     },
     signedpod::SignedPod,
 };
-use crate::middleware::{hash_str, Params, PodType, KEY_SIGNER, KEY_TYPE};
+use crate::middleware::{
+    hash_str, NativePredicate, Params, PodType, Predicate, ToFields, KEY_SIGNER, KEY_TYPE, SELF,
+};
 
 pub struct SignedPodVerifyGadget {
     pub params: Params,
@@ -73,9 +77,39 @@ pub struct SignedPodVerifyTarget {
 }
 
 impl SignedPodVerifyTarget {
-    pub fn pub_statements(&self) -> Vec<StatementTarget> {
-        // TODO: Here we need to use the self.id in the ValueOf statements
-        todo!()
+    pub fn pub_statements(
+        &self,
+        builder: &mut CircuitBuilder<F, D>,
+        self_id: bool,
+    ) -> Vec<StatementTarget> {
+        let mut statements = Vec::new();
+        let predicate: [Target; Params::predicate_size()] = builder
+            .constants(&Predicate::Native(NativePredicate::ValueOf).to_fields(&self.params))
+            .try_into()
+            .expect("size predicate_size");
+        let pod_id = if self_id {
+            builder.constant_value(SELF.0.into())
+        } else {
+            ValueTarget {
+                elements: self.id.elements,
+            }
+        };
+        for mt_proof in &self.mt_proofs {
+            let args = [
+                StatementArgTarget::anchored_key(builder, &pod_id, &mt_proof.key),
+                StatementArgTarget::literal(builder, &mt_proof.value),
+            ]
+            .into_iter()
+            .chain(iter::repeat_with(|| StatementArgTarget::none(builder)))
+            .take(self.params.max_statement_args)
+            .collect();
+            let statement = StatementTarget {
+                predicate: predicate.clone(),
+                args,
+            };
+            statements.push(statement);
+        }
+        statements
     }
 
     pub fn set_targets(&self, pw: &mut PartialWitness<F>, pod: &SignedPod) -> Result<()> {
