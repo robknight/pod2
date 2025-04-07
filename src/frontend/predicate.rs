@@ -1,9 +1,6 @@
-use anyhow::{anyhow, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 
-use super::{AnchoredKey, SignedPod, Value};
 use crate::middleware::{self, CustomPredicateRef};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
