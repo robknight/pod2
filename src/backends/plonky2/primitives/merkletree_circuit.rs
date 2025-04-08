@@ -2,7 +2,7 @@
 //! offers two different circuits:
 //!
 //! - `MerkleProofCircuit`: allows to verify both proofs of existence and proofs
-//! non-existence with the same circuit.
+//!   non-existence with the same circuit.
 //! - `MerkleProofExistenceCircuit`: allows to verify proofs of existence only.
 //!
 //! If only proofs of existence are needed, use `MerkleProofExistenceCircuit`,
@@ -154,6 +154,7 @@ impl MerkleProofGadget {
 
 impl MerkleClaimAndProofTarget {
     /// assigns the given values to the targets
+    #[allow(clippy::too_many_arguments)]
     pub fn set_targets(
         &self,
         pw: &mut PartialWitness<F>,
@@ -293,9 +294,9 @@ impl MerkleProofExistenceTarget {
 fn compute_root_from_leaf(
     max_depth: usize,
     builder: &mut CircuitBuilder<F, D>,
-    path: &Vec<BoolTarget>,
+    path: &[BoolTarget],
     leaf_hash: &HashOutTarget,
-    siblings: &Vec<HashOutTarget>,
+    siblings: &[HashOutTarget],
 ) -> Result<HashOutTarget> {
     assert_eq!(siblings.len(), max_depth);
     // Convenience constants
@@ -322,7 +323,7 @@ fn compute_root_from_leaf(
         .rev()
         .collect::<Vec<_>>();
 
-    let mut h = leaf_hash.clone();
+    let mut h = *leaf_hash;
     for (i, (sibling, selector)) in std::iter::zip(siblings, &sibling_selectors)
         .enumerate()
         .rev()
