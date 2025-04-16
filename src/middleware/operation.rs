@@ -1,25 +1,26 @@
-use std::{fmt, iter};
+use std::{fmt, iter, sync::Arc};
 
 use anyhow::{anyhow, Result};
 use log::error;
 use plonky2::field::types::Field;
-use serde::{Deserialize, Serialize};
 
+// use serde::{Deserialize, Serialize};
 use crate::{
     backends::plonky2::primitives::merkletree::{MerkleProof, MerkleTree},
     middleware::{
-        AnchoredKey, CustomPredicateRef, NativePredicate, Params, Predicate, Statement,
-        StatementArg, ToFields, Value, F, SELF,
+        custom::KeyOrWildcard, AnchoredKey, CustomPredicateBatch, CustomPredicateRef,
+        NativePredicate, Params, Predicate, Statement, StatementArg, StatementTmplArg, ToFields,
+        Wildcard, WildcardValue, F, SELF,
     },
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum OperationType {
     Native(NativeOperation),
     Custom(CustomPredicateRef),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum OperationAux {
     None,
     MerkleProof(MerkleProof),
@@ -41,17 +42,19 @@ impl ToFields for OperationType {
             Self::Native(p) => iter::once(F::from_canonical_u64(1))
                 .chain(p.to_fields(params))
                 .collect(),
-            Self::Custom(CustomPredicateRef(pb, i)) => iter::once(F::from_canonical_u64(3))
-                .chain(pb.hash(params).0)
-                .chain(iter::once(F::from_canonical_usize(*i)))
-                .collect(),
+            Self::Custom(CustomPredicateRef { batch, index }) => {
+                iter::once(F::from_canonical_u64(3))
+                    .chain(batch.hash(params).0)
+                    .chain(iter::once(F::from_canonical_usize(*index)))
+                    .collect()
+            }
         };
         fields.resize_with(Params::operation_type_size(), || F::from_canonical_u64(0));
         fields
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeOperation {
     None = 0,
     NewEntry = 1,
@@ -68,6 +71,14 @@ pub enum NativeOperation {
     SumOf = 13,
     ProductOf = 14,
     MaxOf = 15,
+
+    // Syntactic sugar operations.  These operations are not supported by the backend.  The
+    // frontend compiler is responsible of translating these operations into the operations above.
+    DictContainsFromEntries = 1001,
+    DictNotContainsFromEntries = 1002,
+    SetContainsFromEntries = 1003,
+    SetNotContainsFromEntries = 1004,
+    ArrayContainsFromEntries = 1005,
 }
 
 impl ToFields for NativeOperation {
@@ -108,6 +119,7 @@ impl OperationType {
                 NativeOperation::SumOf => Some(Predicate::Native(NativePredicate::SumOf)),
                 NativeOperation::ProductOf => Some(Predicate::Native(NativePredicate::ProductOf)),
                 NativeOperation::MaxOf => Some(Predicate::Native(NativePredicate::MaxOf)),
+                no => unreachable!("Unexpected syntactic sugar op {:?}", no),
             },
             OperationType::Custom(cpr) => Some(Predicate::Custom(cpr.clone())),
         }
@@ -115,7 +127,7 @@ impl OperationType {
 }
 
 // TODO: Refine this enum.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Operation {
     None,
     NewEntry,
@@ -263,7 +275,10 @@ impl Operation {
             Self::CopyStatement(s1) => Some(s1.args()),
             Self::EqualFromEntries(ValueOf(ak1, v1), ValueOf(ak2, v2)) => {
                 if v1 == v2 {
-                    Some(vec![StatementArg::Key(*ak1), StatementArg::Key(*ak2)])
+                    Some(vec![
+                        StatementArg::Key(ak1.clone()),
+                        StatementArg::Key(ak2.clone()),
+                    ])
                 } else {
                     return Err(anyhow!("Invalid operation"));
                 }
@@ -273,7 +288,10 @@ impl Operation {
             }
             Self::NotEqualFromEntries(ValueOf(ak1, v1), ValueOf(ak2, v2)) => {
                 if v1 != v2 {
-                    Some(vec![StatementArg::Key(*ak1), StatementArg::Key(*ak2)])
+                    Some(vec![
+                        StatementArg::Key(ak1.clone()),
+                        StatementArg::Key(ak2.clone()),
+                    ])
                 } else {
                     return Err(anyhow!("Invalid operation"));
                 }
@@ -283,7 +301,10 @@ impl Operation {
             }
             Self::GtFromEntries(ValueOf(ak1, v1), ValueOf(ak2, v2)) => {
                 if v1 > v2 {
-                    Some(vec![StatementArg::Key(*ak1), StatementArg::Key(*ak2)])
+                    Some(vec![
+                        StatementArg::Key(ak1.clone()),
+                        StatementArg::Key(ak2.clone()),
+                    ])
                 } else {
                     return Err(anyhow!("Invalid operation"));
                 }
@@ -293,7 +314,10 @@ impl Operation {
             }
             Self::LtFromEntries(ValueOf(ak1, v1), ValueOf(ak2, v2)) => {
                 if v1 < v2 {
-                    Some(vec![StatementArg::Key(*ak1), StatementArg::Key(*ak2)])
+                    Some(vec![
+                        StatementArg::Key(ak1.clone()),
+                        StatementArg::Key(ak2.clone()),
+                    ])
                 } else {
                     return Err(anyhow!("Invalid operation"));
                 }
@@ -303,7 +327,10 @@ impl Operation {
             }
             Self::TransitiveEqualFromStatements(Equal(ak1, ak2), Equal(ak3, ak4)) => {
                 if ak2 == ak3 {
-                    Some(vec![StatementArg::Key(*ak1), StatementArg::Key(*ak4)])
+                    Some(vec![
+                        StatementArg::Key(ak1.clone()),
+                        StatementArg::Key(ak4.clone()),
+                    ])
                 } else {
                     return Err(anyhow!("Invalid operation"));
                 }
@@ -311,48 +338,54 @@ impl Operation {
             Self::TransitiveEqualFromStatements(_, _) => {
                 return Err(anyhow!("Invalid operation"));
             }
-            Self::GtToNotEqual(Gt(ak1, ak2)) => {
-                Some(vec![StatementArg::Key(*ak1), StatementArg::Key(*ak2)])
-            }
+            Self::GtToNotEqual(Gt(ak1, ak2)) => Some(vec![
+                StatementArg::Key(ak1.clone()),
+                StatementArg::Key(ak2.clone()),
+            ]),
             Self::GtToNotEqual(_) => {
                 return Err(anyhow!("Invalid operation"));
             }
-            Self::LtToNotEqual(Gt(ak1, ak2)) => {
-                Some(vec![StatementArg::Key(*ak1), StatementArg::Key(*ak2)])
-            }
+            Self::LtToNotEqual(Gt(ak1, ak2)) => Some(vec![
+                StatementArg::Key(ak1.clone()),
+                StatementArg::Key(ak2.clone()),
+            ]),
             Self::LtToNotEqual(_) => {
                 return Err(anyhow!("Invalid operation"));
             }
             Self::ContainsFromEntries(ValueOf(ak1, v1), ValueOf(ak2, v2), ValueOf(ak3, v3), pf)
-                if MerkleTree::verify(pf.siblings.len(), (*v1).into(), pf, v2, v3).is_ok() =>
+                if MerkleTree::verify(pf.siblings.len(), v1.into(), pf, &v2.raw(), &v3.raw())
+                    .is_ok() =>
             {
                 Some(vec![
-                    StatementArg::Key(*ak1),
-                    StatementArg::Key(*ak2),
-                    StatementArg::Key(*ak3),
+                    StatementArg::Key(ak1.clone()),
+                    StatementArg::Key(ak2.clone()),
+                    StatementArg::Key(ak3.clone()),
                 ])
             }
             Self::ContainsFromEntries(_, _, _, _) => {
                 return Err(anyhow!("Invalid operation"));
             }
             Self::NotContainsFromEntries(ValueOf(ak1, v1), ValueOf(ak2, v2), pf)
-                if MerkleTree::verify_nonexistence(pf.siblings.len(), (*v1).into(), pf, v2)
+                if MerkleTree::verify_nonexistence(pf.siblings.len(), v1.into(), pf, &v2.raw())
                     .is_ok() =>
             {
-                Some(vec![StatementArg::Key(*ak1), StatementArg::Key(*ak2)])
+                Some(vec![
+                    StatementArg::Key(ak1.clone()),
+                    StatementArg::Key(ak2.clone()),
+                ])
             }
             Self::NotContainsFromEntries(_, _, _) => {
                 return Err(anyhow!("Invalid operation"));
             }
             Self::SumOf(ValueOf(ak1, v1), ValueOf(ak2, v2), ValueOf(ak3, v3)) => {
-                let v1: i64 = (*v1).try_into()?;
-                let v2: i64 = (*v2).try_into()?;
-                let v3: i64 = (*v3).try_into()?;
+                let v1: i64 = v1.typed().try_into()?;
+                let v2: i64 = v2.typed().try_into()?;
+                let v3: i64 = v3.typed().try_into()?;
                 if v1 == v2 + v3 {
                     Some(vec![
-                        StatementArg::Key(*ak1),
-                        StatementArg::Key(*ak2),
-                        StatementArg::Key(*ak3),
+                        StatementArg::Key(ak1.clone()),
+                        StatementArg::Key(ak2.clone()),
+                        StatementArg::Key(ak3.clone()),
                     ])
                 } else {
                     return Err(anyhow!("Invalid operation"));
@@ -362,14 +395,14 @@ impl Operation {
                 return Err(anyhow!("Invalid operation"));
             }
             Self::ProductOf(ValueOf(ak1, v1), ValueOf(ak2, v2), ValueOf(ak3, v3)) => {
-                let v1: i64 = (*v1).try_into()?;
-                let v2: i64 = (*v2).try_into()?;
-                let v3: i64 = (*v3).try_into()?;
+                let v1: i64 = v1.typed().try_into()?;
+                let v2: i64 = v2.typed().try_into()?;
+                let v3: i64 = v3.typed().try_into()?;
                 if v1 == v2 * v3 {
                     Some(vec![
-                        StatementArg::Key(*ak1),
-                        StatementArg::Key(*ak2),
-                        StatementArg::Key(*ak3),
+                        StatementArg::Key(ak1.clone()),
+                        StatementArg::Key(ak2.clone()),
+                        StatementArg::Key(ak3.clone()),
                     ])
                 } else {
                     return Err(anyhow!("Invalid operation"));
@@ -379,14 +412,14 @@ impl Operation {
                 return Err(anyhow!("Invalid operation"));
             }
             Self::MaxOf(ValueOf(ak1, v1), ValueOf(ak2, v2), ValueOf(ak3, v3)) => {
-                let v1: i64 = (*v1).try_into()?;
-                let v2: i64 = (*v2).try_into()?;
-                let v3: i64 = (*v3).try_into()?;
+                let v1: i64 = v1.typed().try_into()?;
+                let v2: i64 = v2.typed().try_into()?;
+                let v3: i64 = v3.typed().try_into()?;
                 if v1 == std::cmp::max(v2, v3) {
                     Some(vec![
-                        StatementArg::Key(*ak1),
-                        StatementArg::Key(*ak2),
-                        StatementArg::Key(*ak3),
+                        StatementArg::Key(ak1.clone()),
+                        StatementArg::Key(ak2.clone()),
+                        StatementArg::Key(ak3.clone()),
                     ])
                 } else {
                     return Err(anyhow!("Invalid operation"));
@@ -413,11 +446,11 @@ impl Operation {
         Ok(valid)
     }
     /// Checks the given operation against a statement.
-    pub fn check(&self, _params: &Params, output_statement: &Statement) -> Result<bool> {
+    pub fn check(&self, params: &Params, output_statement: &Statement) -> Result<bool> {
         use Statement::*;
         match (self, output_statement) {
             (Self::None, None) => Ok(true),
-            (Self::NewEntry, ValueOf(AnchoredKey(pod_id, _), _)) => Ok(pod_id == &SELF),
+            (Self::NewEntry, ValueOf(AnchoredKey { pod_id, .. }, _)) => Ok(pod_id == &SELF),
             (Self::CopyStatement(s1), s2) => Ok(s1 == s2),
             (Self::EqualFromEntries(ValueOf(ak1, v1), ValueOf(ak2, v2)), Equal(ak3, ak4)) => {
                 Ok(v1 == v2 && ak3 == ak1 && ak4 == ak2)
@@ -451,40 +484,15 @@ impl Operation {
                 Self::SumOf(ValueOf(ak1, v1), ValueOf(ak2, v2), ValueOf(ak3, v3)),
                 SumOf(ak4, ak5, ak6),
             ) => {
-                let v1: i64 = (*v1).try_into()?;
-                let v2: i64 = (*v2).try_into()?;
-                let v3: i64 = (*v3).try_into()?;
+                let v1: i64 = v1.typed().try_into()?;
+                let v2: i64 = v2.typed().try_into()?;
+                let v3: i64 = v3.typed().try_into()?;
                 Ok((v1 == v2 + v3) && ak4 == ak1 && ak5 == ak2 && ak6 == ak3)
             }
-            (Self::Custom(CustomPredicateRef(cpb, i), args), Custom(cpr, s_args))
-                if cpb == &cpr.0 && i == &cpr.1 =>
+            (Self::Custom(CustomPredicateRef { batch, index }, args), Custom(cpr, s_args))
+                if batch == &cpr.batch && index == &cpr.index =>
             {
-                // Bind according to custom predicate pattern match against arg list.
-                let bindings = cpr.match_against(args)?;
-                // Check arg length
-                let arg_len = cpr.arg_len();
-                if arg_len != 2 * s_args.len() {
-                    Err(anyhow!("Custom predicate arg list {:?} must have {} arguments after destructuring.", s_args, arg_len))
-                } else {
-                    let bound_args = (0..arg_len)
-                        .map(|i| {
-                            bindings.get(&i).cloned().ok_or(anyhow!(
-                                "Wildcard {} of custom predicate {:?} is unbound.",
-                                i,
-                                cpr
-                            ))
-                        })
-                        .collect::<Result<Vec<_>>>()?;
-                    let s_args = s_args
-                        .iter()
-                        .flat_map(|AnchoredKey(o, k)| [Value::from(o.0), (*k).into()])
-                        .collect::<Vec<_>>();
-                    if bound_args != s_args {
-                        Err(anyhow!("Arguments to output statement {} do not match those implied by operation {:?}", output_statement,self))
-                    } else {
-                        Ok(true)
-                    }
-                }
+                check_custom_pred(params, batch, *index, args, s_args)
             }
             _ => Err(anyhow!(
                 "Invalid deduction: {:?} ⇏ {:#}",
@@ -492,6 +500,120 @@ impl Operation {
                 output_statement
             )),
         }
+    }
+}
+
+/// Check that a StatementArg follows a StatementTmplArg based on the currently mapped wildcards.
+/// Update the wildcard map with newly found wildcards.
+pub fn check_st_tmpl(
+    st_tmpl_arg: &StatementTmplArg,
+    st_arg: &StatementArg,
+    // Map from wildcards to values that we have seen so far.
+    wildcard_map: &mut [Option<WildcardValue>],
+) -> bool {
+    // Check that the value `v` at wildcard `wc` exists in the map or set it.
+    fn check_or_set(
+        v: WildcardValue,
+        wc: &Wildcard,
+        wildcard_map: &mut [Option<WildcardValue>],
+    ) -> bool {
+        if let Some(prev) = &wildcard_map[wc.index] {
+            if *prev != v {
+                // TODO: Return nice error
+                return false;
+            }
+        } else {
+            wildcard_map[wc.index] = Some(v);
+        }
+        true
+    }
+
+    match (st_tmpl_arg, st_arg) {
+        (StatementTmplArg::None, StatementArg::None) => true,
+        (StatementTmplArg::Literal(lhs), StatementArg::Literal(rhs)) if lhs == rhs => true,
+        (
+            StatementTmplArg::Key(pod_id_wc, key_or_wc),
+            StatementArg::Key(AnchoredKey { pod_id, key }),
+        ) => {
+            let pod_id_ok = check_or_set(WildcardValue::PodId(*pod_id), pod_id_wc, wildcard_map);
+            let key_ok = match key_or_wc {
+                KeyOrWildcard::Key(tmpl_key) => tmpl_key == key,
+                KeyOrWildcard::Wildcard(key_wc) => {
+                    check_or_set(WildcardValue::Key(key.clone()), key_wc, wildcard_map)
+                }
+            };
+            pod_id_ok && key_ok
+        }
+        (StatementTmplArg::WildcardLiteral(wc), StatementArg::WildcardLiteral(v)) => {
+            check_or_set(v.clone(), wc, wildcard_map)
+        }
+        _ => false,
+    }
+}
+
+fn check_custom_pred(
+    params: &Params,
+    batch: &Arc<CustomPredicateBatch>,
+    index: usize,
+    args: &[Statement],
+    s_args: &[WildcardValue],
+) -> Result<bool> {
+    let pred = &batch.predicates[index];
+    if pred.statements.len() != args.len() {
+        return Err(anyhow!(
+            "Custom predicate operation needs {} statements but has {}.",
+            pred.statements.len(),
+            args.len()
+        ));
+    }
+    if pred.args_len != s_args.len() {
+        return Err(anyhow!(
+            "Custom predicate statement needs {} args but has {}.",
+            pred.args_len,
+            s_args.len()
+        ));
+    }
+
+    // Check that all wildcard have consistent values as assigned in the statements while storing a
+    // map of their values.  Count the number of statements that match the templates by predicate.
+    // NOTE: We assume the statements have the same order as defined in the custom predicate.  For
+    // disjunctions we expect Statement::None for the unused statements.
+    let mut num_matches = 0;
+    let mut wildcard_map = vec![None; params.max_custom_predicate_wildcards];
+    for (st_tmpl, st) in pred.statements.iter().zip(args) {
+        let st_args = st.args();
+        for (st_tmpl_arg, st_arg) in st_tmpl.args.iter().zip(&st_args) {
+            if !check_st_tmpl(st_tmpl_arg, st_arg, &mut wildcard_map) {
+                // TODO: Better errors.  Example:
+                // println!("{} doesn't match {}", st_arg, st_tmpl_arg);
+                // println!("{} doesn't match {}", st, st_tmpl);
+                return Ok(false);
+            }
+        }
+
+        let st_tmpl_pred = match &st_tmpl.pred {
+            Predicate::BatchSelf(i) => Predicate::Custom(CustomPredicateRef {
+                batch: batch.clone(),
+                index: *i,
+            }),
+            p => p.clone(),
+        };
+        if st_tmpl_pred == st.predicate() {
+            num_matches += 1;
+        }
+    }
+
+    // Check that the resolved wildcard match the statement arguments.
+    for (s_arg, wc_value) in s_args.iter().zip(wildcard_map.iter()) {
+        if !wc_value.as_ref().is_none_or(|wc_value| *wc_value == *s_arg) {
+            return Ok(false);
+        }
+    }
+
+    if pred.conjunction {
+        Ok(num_matches == pred.statements.len())
+    } else {
+        Ok(num_matches > 0)
     }
 }
 

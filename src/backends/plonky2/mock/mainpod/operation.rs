@@ -2,17 +2,19 @@ use std::{fmt, iter};
 
 use anyhow::{anyhow, Result};
 use plonky2::field::types::Field;
-use serde::{Deserialize, Serialize};
 
+// use serde::{Deserialize, Serialize};
 use crate::{
     backends::plonky2::{
         mock::mainpod::Statement,
         primitives::merkletree::{self},
     },
-    middleware::{self, Hash, OperationType, Params, ToFields, Value, EMPTY_HASH, EMPTY_VALUE, F},
+    middleware::{
+        self, Hash, OperationType, Params, RawValue, ToFields, EMPTY_HASH, EMPTY_VALUE, F,
+    },
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum OperationArg {
     None,
     Index(usize),
@@ -34,7 +36,7 @@ impl OperationArg {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum OperationAux {
     None,
     MerkleProofIndex(usize),
@@ -50,17 +52,17 @@ impl ToFields for OperationAux {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MerkleClaimAndProof {
     pub enabled: bool,
     pub root: Hash,
-    pub key: Value,
-    pub value: Value,
+    pub key: RawValue,
+    pub value: RawValue,
     pub existence: bool,
     pub siblings: Vec<Hash>,
     pub case_ii_selector: bool,
-    pub other_key: Value,
-    pub other_value: Value,
+    pub other_key: RawValue,
+    pub other_value: RawValue,
 }
 
 impl MerkleClaimAndProof {
@@ -68,7 +70,7 @@ impl MerkleClaimAndProof {
         Self {
             enabled: false,
             root: EMPTY_HASH,
-            key: Value::from(1),
+            key: RawValue::from(1),
             value: EMPTY_VALUE,
             existence: false,
             siblings: iter::repeat(EMPTY_HASH).take(max_depth).collect(),
@@ -79,9 +81,9 @@ impl MerkleClaimAndProof {
     }
     pub fn try_from_middleware(
         params: &Params,
-        root: &Value,
-        key: &Value,
-        value: Option<&Value>,
+        root: &RawValue,
+        key: &RawValue,
+        value: Option<&RawValue>,
         mid_mp: &merkletree::MerkleProof,
     ) -> Result<Self> {
         if mid_mp.siblings.len() > params.max_depth_mt_gadget {
@@ -152,7 +154,7 @@ impl fmt::Display for MerkleClaimAndProof {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Operation(pub OperationType, pub Vec<OperationArg>, pub OperationAux);
 
 impl Operation {
@@ -209,7 +211,7 @@ impl fmt::Display for Operation {
         }
         match self.2 {
             OperationAux::None => (),
-            OperationAux::MerkleProofIndex(i) => write!(f, "merkle_proof_{:02}", i)?,
+            OperationAux::MerkleProofIndex(i) => write!(f, " merkle_proof_{:02}", i)?,
         }
         Ok(())
     }

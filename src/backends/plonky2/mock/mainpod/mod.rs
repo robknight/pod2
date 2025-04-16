@@ -1,10 +1,10 @@
 use std::{any::Any, fmt};
 
 use anyhow::{anyhow, Result};
-use base64::prelude::*;
+// use base64::prelude::*;
 use plonky2::{hash::poseidon::PoseidonHash, plonk::config::Hasher};
-use serde::{Deserialize, Serialize};
 
+// use serde::{Deserialize, Serialize};
 use crate::{
     backends::plonky2::primitives::merkletree,
     middleware::{
@@ -27,7 +27,7 @@ impl PodProver for MockProver {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct MockMainPod {
     params: Params,
     id: PodId,
@@ -199,7 +199,7 @@ impl MockMainPod {
         // Public statements
         assert!(inputs.public_statements.len() < params.max_public_statements);
         let mut type_st = middleware::Statement::ValueOf(
-            AnchoredKey(SELF, hash_str(KEY_TYPE)),
+            AnchoredKey::from((SELF, KEY_TYPE)),
             middleware::Value::from(PodType::MockMain),
         )
         .into();
@@ -235,9 +235,9 @@ impl MockMainPod {
                     pf,
                 ) => Some(MerkleClaimAndProof::try_from_middleware(
                     params,
-                    root,
-                    key,
-                    Some(value),
+                    &root.raw(),
+                    &key.raw(),
+                    Some(&value.raw()),
                     pf,
                 )),
                 middleware::Operation::NotContainsFromEntries(
@@ -245,7 +245,11 @@ impl MockMainPod {
                     middleware::Statement::ValueOf(_, key),
                     pf,
                 ) => Some(MerkleClaimAndProof::try_from_middleware(
-                    params, root, key, None, pf,
+                    params,
+                    &root.raw(),
+                    &key.raw(),
+                    None,
+                    pf,
                 )),
                 _ => None,
             })
@@ -417,14 +421,14 @@ impl MockMainPod {
         fill_pad(args, OperationArg::None, params.max_operation_args)
     }
 
-    pub fn deserialize(serialized: String) -> Result<Self> {
-        let proof = String::from_utf8(BASE64_STANDARD.decode(&serialized)?)
-            .map_err(|e| anyhow::anyhow!("Invalid base64 encoding: {}", e))?;
-        let pod: MockMainPod = serde_json::from_str(&proof)
-            .map_err(|e| anyhow::anyhow!("Failed to parse proof: {}", e))?;
+    // pub fn deserialize(serialized: String) -> Result<Self> {
+    //     let proof = String::from_utf8(BASE64_STANDARD.decode(&serialized)?)
+    //         .map_err(|e| anyhow::anyhow!("Invalid base64 encoding: {}", e))?;
+    //     let pod: MockMainPod = serde_json::from_str(&proof)
+    //         .map_err(|e| anyhow::anyhow!("Failed to parse proof: {}", e))?;
 
-        Ok(pod)
-    }
+    //     Ok(pod)
+    // }
 }
 
 pub fn hash_statements(statements: &[Statement], _params: &Params) -> middleware::Hash {
@@ -449,8 +453,8 @@ impl Pod for MockMainPod {
         let has_type_statement = self.public_statements.iter().any(|s| {
             s.0 == Predicate::Native(NativePredicate::ValueOf)
                 && !s.1.is_empty()
-                && if let StatementArg::Key(AnchoredKey(pod_id, key_hash)) = s.1[0] {
-                    pod_id == SELF && key_hash == hash_str(KEY_TYPE)
+                && if let StatementArg::Key(AnchoredKey { pod_id, ref key }) = s.1[0] {
+                    pod_id == SELF && key.hash() == hash_str(KEY_TYPE)
                 } else {
                     false
                 }
@@ -477,7 +481,7 @@ impl Pod for MockMainPod {
                 .filter(|(_, s)| s.0 == Predicate::Native(NativePredicate::ValueOf))
                 .flat_map(|(i, s)| {
                     if let StatementArg::Key(ak) = &s.1[0] {
-                        vec![(i, ak.1, ak.0)]
+                        vec![(i, ak.pod_id, ak.key.hash())]
                     } else {
                         vec![]
                     }
@@ -536,10 +540,10 @@ impl Pod for MockMainPod {
                         .1
                         .iter()
                         .map(|sa| match &sa {
-                            StatementArg::Key(AnchoredKey(pod_id, h)) if *pod_id == SELF => {
-                                StatementArg::Key(AnchoredKey(self.id(), *h))
+                            StatementArg::Key(AnchoredKey { pod_id, key }) if *pod_id == SELF => {
+                                StatementArg::Key(AnchoredKey::new(self.id(), key.clone()))
                             }
-                            _ => *sa,
+                            _ => sa.clone(),
                         })
                         .collect(),
                 )
@@ -557,7 +561,8 @@ impl Pod for MockMainPod {
     }
 
     fn serialized_proof(&self) -> String {
-        BASE64_STANDARD.encode(serde_json::to_string(self).unwrap())
+        todo!()
+        // BASE64_STANDARD.encode(serde_json::to_string(self).unwrap())
     }
 }
 
@@ -570,19 +575,14 @@ pub mod tests {
             great_boy_pod_full_flow, tickets_pod_full_flow, zu_kyc_pod_builder,
             zu_kyc_sign_pod_builders,
         },
-        middleware,
+        middleware::{self},
     };
 
     #[test]
     fn test_mock_main_zu_kyc() -> Result<()> {
         let params = middleware::Params::default();
-        let sanctions_values = ["A343434340"].map(|s| crate::frontend::Value::from(s));
-        let sanction_set = crate::frontend::Value::Set(crate::frontend::containers::Set::new(
-            sanctions_values.to_vec(),
-        )?);
-
         let (gov_id_builder, pay_stub_builder, sanction_list_builder) =
-            zu_kyc_sign_pod_builders(&params, &sanction_set);
+            zu_kyc_sign_pod_builders(&params);
         let mut signer = MockSigner {
             pk: "ZooGov".into(),
         };

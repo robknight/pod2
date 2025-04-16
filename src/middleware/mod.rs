@@ -1,7 +1,15 @@
 //! The middleware includes the type definitions and the traits used to connect the frontend and
 //! the backend.
 
+use std::sync::Arc;
 mod basetypes;
+use std::{
+    cmp::{Ordering, PartialEq, PartialOrd},
+    hash,
+};
+
+use anyhow::anyhow;
+use containers::{Array, Dictionary, Set};
 pub mod containers;
 mod custom;
 mod operation;
@@ -14,11 +22,213 @@ pub use basetypes::*;
 pub use custom::*;
 use dyn_clone::DynClone;
 pub use operation::*;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+// use schemars::JsonSchema;
+// use serde::{Deserialize, Serialize};
 pub use statement::*;
 
 pub const SELF: PodId = PodId(SELF_ID_HASH);
+
+// TODO: Move all value-related types to to `value.rs`
+#[derive(Clone, Debug)]
+// TODO #[schemars(transform = serialization::transform_value_schema)]
+pub enum TypedValue {
+    // Serde cares about the order of the enum variants, with untagged variants
+    // appearing at the end.
+    // Variants without "untagged" will be serialized as "tagged" values by
+    // default, meaning that a Set appears in JSON as {"Set":[...]}
+    // and not as [...]
+    // Arrays, Strings and Booleans are untagged, as there is a natural JSON
+    // representation for them that is unambiguous to deserialize and is fully
+    // compatible with the semantics of the POD types.
+    // As JSON integers do not specify precision, and JavaScript is limited to
+    // 53-bit precision for integers, integers are represented as tagged
+    // strings, with a custom serializer and deserializer.
+    // TAGGED TYPES:
+    Set(Set),
+    Dictionary(Dictionary),
+    Int(
+        // TODO #[serde(serialize_with = "serialize_i64", deserialize_with = "deserialize_i64")]
+        // #[schemars(with = "String", regex(pattern = r"^\d+$"))]
+        i64,
+    ),
+    // Uses the serialization for middleware::Value:
+    Raw(RawValue),
+    // UNTAGGED TYPES:
+    // #[serde(untagged)]
+    // #[schemars(skip)]
+    Array(Array),
+    // #[serde(untagged)]
+    // #[schemars(skip)]
+    String(String),
+    // #[serde(untagged)]
+    // #[schemars(skip)]
+    Bool(bool),
+}
+
+impl From<&str> for TypedValue {
+    fn from(s: &str) -> Self {
+        TypedValue::String(s.to_string())
+    }
+}
+
+impl From<String> for TypedValue {
+    fn from(s: String) -> Self {
+        TypedValue::String(s)
+    }
+}
+
+impl From<i64> for TypedValue {
+    fn from(v: i64) -> Self {
+        TypedValue::Int(v)
+    }
+}
+
+impl From<bool> for TypedValue {
+    fn from(b: bool) -> Self {
+        TypedValue::Bool(b)
+    }
+}
+
+impl From<Hash> for TypedValue {
+    fn from(h: Hash) -> Self {
+        TypedValue::Raw(RawValue(h.0))
+    }
+}
+
+impl From<Set> for TypedValue {
+    fn from(s: Set) -> Self {
+        TypedValue::Set(s)
+    }
+}
+
+impl From<Dictionary> for TypedValue {
+    fn from(d: Dictionary) -> Self {
+        TypedValue::Dictionary(d)
+    }
+}
+
+impl From<Array> for TypedValue {
+    fn from(a: Array) -> Self {
+        TypedValue::Array(a)
+    }
+}
+
+impl From<RawValue> for TypedValue {
+    fn from(v: RawValue) -> Self {
+        TypedValue::Raw(v)
+    }
+}
+
+impl From<PodType> for TypedValue {
+    fn from(t: PodType) -> Self {
+        TypedValue::from(t as i64)
+    }
+}
+
+impl TryFrom<&TypedValue> for i64 {
+    type Error = anyhow::Error;
+    fn try_from(v: &TypedValue) -> std::result::Result<Self, Self::Error> {
+        if let TypedValue::Int(n) = v {
+            Ok(*n)
+        } else {
+            Err(anyhow!("Value not an int"))
+        }
+    }
+}
+
+impl fmt::Display for TypedValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TypedValue::String(s) => write!(f, "\"{}\"", s),
+            TypedValue::Int(v) => write!(f, "{}", v),
+            TypedValue::Bool(b) => write!(f, "{}", b),
+            TypedValue::Dictionary(d) => write!(f, "dict:{}", d.commitment()),
+            TypedValue::Set(s) => write!(f, "set:{}", s.commitment()),
+            TypedValue::Array(a) => write!(f, "arr:{}", a.commitment()),
+            TypedValue::Raw(v) => write!(f, "{}", v),
+        }
+    }
+}
+
+impl From<&TypedValue> for RawValue {
+    fn from(v: &TypedValue) -> Self {
+        match v {
+            TypedValue::String(s) => RawValue::from(hash_str(s)),
+            TypedValue::Int(v) => RawValue::from(*v),
+            TypedValue::Bool(b) => RawValue::from(*b as i64),
+            TypedValue::Dictionary(d) => RawValue::from(d.commitment()),
+            TypedValue::Set(s) => RawValue::from(s.commitment()),
+            TypedValue::Array(a) => RawValue::from(a.commitment()),
+            TypedValue::Raw(v) => *v,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Value {
+    // The `TypedValue` is under `Arc` so that cloning a `Value` is cheap.
+    typed: Arc<TypedValue>,
+    raw: RawValue,
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        self.raw == other.raw
+    }
+}
+
+impl Eq for Value {}
+
+impl PartialOrd for Value {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.raw.cmp(&other.raw))
+    }
+}
+
+impl Ord for Value {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.raw.cmp(&other.raw)
+    }
+}
+
+impl hash::Hash for Value {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        self.raw.hash(state)
+    }
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.typed)
+    }
+}
+
+impl Value {
+    pub fn new(value: TypedValue) -> Self {
+        let raw_value = RawValue::from(&value);
+        Self {
+            typed: Arc::new(value),
+            raw: raw_value,
+        }
+    }
+
+    pub fn typed(&self) -> &TypedValue {
+        &self.typed
+    }
+    pub fn raw(&self) -> RawValue {
+        self.raw
+    }
+}
+
+// A Value can be created from any type Into<TypedValue> type: bool, string-like, i64, ...
+impl<T> From<T> for Value
+where
+    T: Into<TypedValue>,
+{
+    fn from(t: T) -> Self {
+        Self::new(t.into())
+    }
+}
 
 impl fmt::Display for PodId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -32,30 +242,93 @@ impl fmt::Display for PodId {
     }
 }
 
-/// AnchoredKey is a tuple containing (OriginId: PodId, key: Hash)
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct AnchoredKey(pub PodId, pub Hash);
+impl From<&Value> for Hash {
+    fn from(v: &Value) -> Self {
+        Self(v.raw.0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Key {
+    name: String,
+    hash: Hash,
+}
+
+impl Key {
+    pub fn new(name: String) -> Self {
+        let hash = hash_str(&name);
+        Self { name, hash }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+    pub fn hash(&self) -> Hash {
+        self.hash
+    }
+    pub fn raw(&self) -> RawValue {
+        RawValue(self.hash.0)
+    }
+}
+
+// A Key can easily be created from a string-like type
+impl<T> From<T> for Key
+where
+    T: Into<String>,
+{
+    fn from(t: T) -> Self {
+        Self::new(t.into())
+    }
+}
+
+impl ToFields for Key {
+    fn to_fields(&self, params: &Params) -> Vec<F> {
+        self.hash.to_fields(params)
+    }
+}
+
+impl fmt::Display for Key {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)?;
+        Ok(())
+    }
+}
+
+impl From<Key> for RawValue {
+    fn from(key: Key) -> RawValue {
+        RawValue(key.hash.0)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AnchoredKey {
+    pub pod_id: PodId,
+    pub key: Key,
+}
 
 impl AnchoredKey {
-    pub fn origin(&self) -> PodId {
-        self.0
-    }
-    pub fn key(&self) -> Hash {
-        self.1
+    pub fn new(pod_id: PodId, key: Key) -> Self {
+        Self { pod_id, key }
     }
 }
 
 impl fmt::Display for AnchoredKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}", self.0, self.1)?;
+        write!(f, "{}.{}", self.pod_id, self.key)?;
         Ok(())
     }
 }
 
-/// An entry consists of a key-value pair.
-pub type Entry = (String, Value);
+impl<T> From<(PodId, T)> for AnchoredKey
+where
+    T: Into<Key>,
+{
+    fn from((pod_id, t): (PodId, T)) -> Self {
+        Self::new(pod_id, t.into())
+    }
+}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct PodId(pub Hash);
 
 impl ToFields for PodId {
@@ -72,6 +345,7 @@ pub enum PodType {
     Signed = 3,
     Main = 4,
 }
+
 impl fmt::Display for PodType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -84,13 +358,7 @@ impl fmt::Display for PodType {
     }
 }
 
-impl From<PodType> for Value {
-    fn from(v: PodType) -> Self {
-        Value::from(v as i64)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Params {
     pub max_input_signed_pods: usize,
     pub max_input_main_pods: usize,
@@ -102,6 +370,7 @@ pub struct Params {
     // max number of statements that can be ANDed or ORed together
     // in a custom predicate
     pub max_custom_predicate_arity: usize,
+    pub max_custom_predicate_wildcards: usize,
     pub max_custom_batch_size: usize,
     // maximum number of merkle proofs
     pub max_merkle_proofs: usize,
@@ -120,6 +389,7 @@ impl Default for Params {
             max_statement_args: 5,
             max_operation_args: 5,
             max_custom_predicate_arity: 5,
+            max_custom_predicate_wildcards: 10,
             max_custom_batch_size: 5,
             max_merkle_proofs: 5,
             max_depth_mt_gadget: 32,
@@ -213,7 +483,7 @@ pub trait Pod: fmt::Debug + DynClone {
 dyn_clone::clone_trait_object!(Pod);
 
 pub trait PodSigner {
-    fn sign(&mut self, params: &Params, kvs: &HashMap<Hash, Value>) -> Result<Box<dyn Pod>>;
+    fn sign(&mut self, params: &Params, kvs: &HashMap<Key, Value>) -> Result<Box<dyn Pod>>;
 }
 
 /// This is a filler type that fulfills the Pod trait and always verifies.  It's empty.  This

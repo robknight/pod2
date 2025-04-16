@@ -11,13 +11,13 @@ use plonky2::{
 
 use crate::{
     backends::plonky2::{
-        basetypes::{C, D, F},
+        basetypes::{C, D},
         circuits::mainpod::{MainPodVerifyCircuit, MainPodVerifyInput},
         mock::mainpod::{hash_statements, MockMainPod, Statement},
         signedpod::SignedPod,
     },
     middleware::{
-        self, AnchoredKey, MainPodInputs, Params, Pod, PodId, PodProver, StatementArg, SELF,
+        self, AnchoredKey, MainPodInputs, Params, Pod, PodId, PodProver, StatementArg, F, SELF,
     },
 };
 // TODO: Move the shared components between MockMainPod and MainPod to a common place.
@@ -136,10 +136,10 @@ impl Pod for MainPod {
                         .1
                         .iter()
                         .map(|sa| match &sa {
-                            StatementArg::Key(AnchoredKey(pod_id, h)) if *pod_id == SELF => {
-                                StatementArg::Key(AnchoredKey(self.id(), *h))
+                            StatementArg::Key(AnchoredKey { pod_id, key }) if *pod_id == SELF => {
+                                StatementArg::Key(AnchoredKey::new(self.id(), key.clone()))
                             }
-                            _ => *sa,
+                            _ => sa.clone(),
                         })
                         .collect(),
                 )
@@ -168,60 +168,11 @@ pub mod tests {
         backends::plonky2::{
             mock::mainpod::MockProver, primitives::signature::SecretKey, signedpod::Signer,
         },
-        examples::zu_kyc_sign_pod_builders,
+        examples::{zu_kyc_pod_builder, zu_kyc_sign_pod_builders},
         frontend, middleware,
-        middleware::Value,
+        middleware::RawValue,
         op,
     };
-
-    // TODO: Use the method from examples once everything works
-    pub fn zu_kyc_pod_builder(
-        params: &Params,
-        gov_id: &frontend::SignedPod,
-        pay_stub: &frontend::SignedPod,
-        sanction_list: &frontend::SignedPod,
-    ) -> Result<frontend::MainPodBuilder> {
-        let sanction_set = match sanction_list.kvs.get("sanctionList") {
-            Some(frontend::Value::Set(s)) => Ok(s),
-            _ => Err(anyhow!("Missing sanction list!")),
-        }?;
-        let now_minus_18y: i64 = 1169909388;
-        let now_minus_1y: i64 = 1706367566;
-
-        let gov_id_kvs = gov_id.kvs();
-        let id_number_value = gov_id_kvs.get(&"idNumber".into()).unwrap();
-
-        let mut kyc = frontend::MainPodBuilder::new(params);
-        kyc.add_signed_pod(gov_id);
-        kyc.add_signed_pod(pay_stub);
-        kyc.add_signed_pod(sanction_list);
-        kyc.pub_op(op!(
-            set_not_contains,
-            (sanction_list, "sanctionList"),
-            (gov_id, "idNumber"),
-            sanction_set
-                .middleware_set()
-                .prove_nonexistence(id_number_value)?
-        ))?;
-        kyc.pub_op(op!(lt, (gov_id, "dateOfBirth"), now_minus_18y))?;
-        kyc.pub_op(op!(
-            eq,
-            (gov_id, "socialSecurityNumber"),
-            (pay_stub, "socialSecurityNumber")
-        ))?;
-        let start_date_st = kyc.pub_op(frontend::Operation(
-            frontend::OperationType::Native(frontend::NativeOperation::NewEntry),
-            vec![frontend::OperationArg::Entry(
-                "startDate".to_string(),
-                now_minus_1y.into(),
-            )],
-            middleware::OperationAux::None,
-        ))?;
-        kyc.pub_op(op!(eq, (pay_stub, "startDate"), start_date_st))?;
-        kyc.pub_op(op!(eq, (pay_stub, "startDate"), now_minus_1y))?;
-
-        Ok(kyc)
-    }
 
     #[test]
     fn test_main_zu_kyc() -> Result<()> {
@@ -232,15 +183,13 @@ pub mod tests {
             ..Default::default()
         };
 
-        let sanctions_values = vec!["A343434340".into()];
-        let sanction_set = frontend::Value::Set(frontend::containers::Set::new(sanctions_values)?);
         let (gov_id_builder, pay_stub_builder, sanction_list_builder) =
-            zu_kyc_sign_pod_builders(&params, &sanction_set);
-        let mut signer = Signer(SecretKey(Value::from(1)));
+            zu_kyc_sign_pod_builders(&params);
+        let mut signer = Signer(SecretKey(RawValue::from(1)));
         let gov_id_pod = gov_id_builder.sign(&mut signer)?;
-        let mut signer = Signer(SecretKey(Value::from(2)));
+        let mut signer = Signer(SecretKey(RawValue::from(2)));
         let pay_stub_pod = pay_stub_builder.sign(&mut signer)?;
-        let mut signer = Signer(SecretKey(Value::from(3)));
+        let mut signer = Signer(SecretKey(RawValue::from(3)));
         let sanction_list_pod = sanction_list_builder.sign(&mut signer)?;
         let kyc_builder =
             zu_kyc_pod_builder(&params, &gov_id_pod, &pay_stub_pod, &sanction_list_pod)?;
@@ -267,7 +216,7 @@ pub mod tests {
         gov_id_builder.insert("idNumber", "4242424242");
         gov_id_builder.insert("dateOfBirth", 1169909384);
         gov_id_builder.insert("socialSecurityNumber", "G2121210");
-        let mut signer = Signer(SecretKey(Value::from(42)));
+        let mut signer = Signer(SecretKey(RawValue::from(42)));
         let gov_id = gov_id_builder.sign(&mut signer).unwrap();
         let now_minus_18y: i64 = 1169909388;
         let mut kyc_builder = frontend::MainPodBuilder::new(&params);

@@ -8,7 +8,7 @@ use plonky2::{
 
 use crate::{
     backends::plonky2::{
-        basetypes::{Value, D, EMPTY_HASH, F, VALUE_SIZE},
+        basetypes::D,
         circuits::{
             common::{
                 CircuitBuilderPod, Flattenable, MerkleClaimTarget, OperationTarget,
@@ -24,8 +24,8 @@ use crate::{
         signedpod::SignedPod,
     },
     middleware::{
-        hash_str, AnchoredKey, NativeOperation, NativePredicate, Params, PodType, Statement,
-        StatementArg, ToFields, KEY_TYPE, SELF,
+        AnchoredKey, NativeOperation, NativePredicate, Params, PodType, Statement, StatementArg,
+        ToFields, Value, F, KEY_TYPE, SELF, VALUE_SIZE,
     },
 };
 
@@ -304,7 +304,7 @@ impl OperationVerifyGadget {
         let st_code_ok = st.has_native_type(builder, &self.params, NativePredicate::ValueOf);
 
         let expected_arg_prefix = builder.constants(
-            &StatementArg::Key(AnchoredKey(SELF, EMPTY_HASH)).to_fields(&self.params)[..VALUE_SIZE],
+            &StatementArg::Key(AnchoredKey::from((SELF, ""))).to_fields(&self.params)[..VALUE_SIZE],
         );
         let arg_prefix_ok =
             builder.is_equal_slice(&st.args[0].elements[..VALUE_SIZE], &expected_arg_prefix);
@@ -422,11 +422,13 @@ impl MainPodVerifyGadget {
         let type_statement = &pub_statements[0];
         // TODO: Store this hash in a global static with lazy init so that we don't have to
         // compute it every time.
-        let key_type = hash_str(KEY_TYPE);
         let expected_type_statement = StatementTarget::from_flattened(
             &builder.constants(
-                &Statement::ValueOf(AnchoredKey(SELF, key_type), Value::from(PodType::MockMain))
-                    .to_fields(params),
+                &Statement::ValueOf(
+                    AnchoredKey::from((SELF, KEY_TYPE)),
+                    Value::from(PodType::MockMain),
+                )
+                .to_fields(params),
             ),
         );
         builder.connect_flattenable(type_statement, &expected_type_statement);
@@ -541,7 +543,7 @@ mod tests {
                 mainpod::{OperationArg, OperationAux},
             },
         },
-        middleware::{OperationType, PodId},
+        middleware::{OperationType, PodId, RawValue},
     };
 
     fn operation_verify(
@@ -573,7 +575,7 @@ mod tests {
             .map(|pf| pf.into())
             .collect();
 
-        let operation_verify = OperationVerifyGadget {
+        OperationVerifyGadget {
             params: params.clone(),
         }
         .eval(
@@ -634,10 +636,10 @@ mod tests {
 
         // NewEntry
         let st1: mainpod::Statement =
-            Statement::ValueOf(AnchoredKey(SELF, "hello".into()), 55.into()).into();
+            Statement::ValueOf(AnchoredKey::from((SELF, "hello")), Value::from(55)).into();
         let st2: mainpod::Statement = Statement::ValueOf(
-            AnchoredKey(PodId(Value::from(75).into()), "hello".into()),
-            55.into(),
+            AnchoredKey::from((PodId(RawValue::from(75).into()), "hello")),
+            Value::from(55),
         )
         .into();
         let prev_statements = vec![st2];
@@ -665,13 +667,13 @@ mod tests {
 
         // Eq
         let st2: mainpod::Statement = Statement::ValueOf(
-            AnchoredKey(PodId(Value::from(75).into()), "world".into()),
-            55.into(),
+            AnchoredKey::from((PodId(RawValue::from(75).into()), "world")),
+            Value::from(55),
         )
         .into();
         let st: mainpod::Statement = Statement::Equal(
-            AnchoredKey(SELF, "hello".into()),
-            AnchoredKey(PodId(Value::from(75).into()), "world".into()),
+            AnchoredKey::from((SELF, "hello")),
+            AnchoredKey::from((PodId(RawValue::from(75).into()), "world")),
         )
         .into();
         let op = mainpod::Operation(
@@ -684,13 +686,13 @@ mod tests {
 
         // Lt
         let st2: mainpod::Statement = Statement::ValueOf(
-            AnchoredKey(PodId(Value::from(88).into()), "hello".into()),
-            56.into(),
+            AnchoredKey::from((PodId(RawValue::from(88).into()), "hello")),
+            Value::from(56),
         )
         .into();
         let st: mainpod::Statement = Statement::Lt(
-            AnchoredKey(SELF, "hello".into()),
-            AnchoredKey(PodId(Value::from(88).into()), "hello".into()),
+            AnchoredKey::from((SELF, "hello")),
+            AnchoredKey::from((PodId(RawValue::from(88).into()), "hello")),
         )
         .into();
         let op = mainpod::Operation(
@@ -711,16 +713,16 @@ mod tests {
         .collect();
         let mt = MerkleTree::new(params.max_depth_mt_gadget, &kvs)?;
 
-        let root = mt.root().into();
-        let root_ak = AnchoredKey(PodId(Value::from(88).into()), "merkle root".into());
+        let root = Value::from(mt.root());
+        let root_ak = AnchoredKey::from((PodId(RawValue::from(88).into()), "merkle root"));
 
         let key = 5.into();
-        let key_ak = AnchoredKey(PodId(Value::from(88).into()), "key".into());
+        let key_ak = AnchoredKey::from((PodId(RawValue::from(88).into()), "key"));
 
         let no_key_pf = mt.prove_nonexistence(&key)?;
 
-        let root_st: mainpod::Statement = Statement::ValueOf(root_ak, root).into();
-        let key_st: mainpod::Statement = Statement::ValueOf(key_ak, key).into();
+        let root_st: mainpod::Statement = Statement::ValueOf(root_ak.clone(), root.clone()).into();
+        let key_st: mainpod::Statement = Statement::ValueOf(key_ak.clone(), key.into()).into();
         let st: mainpod::Statement = Statement::NotContains(root_ak, key_ak).into();
         let op = mainpod::Operation(
             OperationType::Native(NativeOperation::NotContainsFromEntries),
@@ -729,7 +731,11 @@ mod tests {
         );
 
         let merkle_proofs = vec![mainpod::MerkleClaimAndProof::try_from_middleware(
-            &params, &root, &key, None, &no_key_pf,
+            &params,
+            &root.raw(),
+            &key,
+            None,
+            &no_key_pf,
         )?];
         let prev_statements = vec![root_st, key_st];
         operation_verify(st, op, prev_statements, merkle_proofs.clone())?;
