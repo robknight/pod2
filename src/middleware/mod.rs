@@ -26,6 +26,8 @@ pub use operation::*;
 // use serde::{Deserialize, Serialize};
 pub use statement::*;
 
+use crate::backends::plonky2::primitives::merkletree::MerkleProof;
+
 pub const SELF: PodId = PodId(SELF_ID_HASH);
 
 // TODO: Move all value-related types to to `value.rs`
@@ -136,6 +138,16 @@ impl TryFrom<&TypedValue> for i64 {
     }
 }
 
+impl TryFrom<TypedValue> for Key {
+    type Error = anyhow::Error;
+    fn try_from(tv: TypedValue) -> Result<Self> {
+        match tv {
+            TypedValue::String(s) => Ok(Key::new(s)),
+            _ => Err(anyhow!("Value {} cannot be converted to a key.", tv)),
+        }
+    }
+}
+
 impl fmt::Display for TypedValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -217,6 +229,30 @@ impl Value {
     }
     pub fn raw(&self) -> RawValue {
         self.raw
+    }
+    /// Determines Merkle existence proof for `key` in `self` (if applicable).
+    pub(crate) fn prove_existence<'a>(
+        &'a self,
+        key: &'a Value,
+    ) -> Result<(&'a Value, MerkleProof)> {
+        match &self.typed() {
+            TypedValue::Array(a) => match key.typed() {
+                TypedValue::Int(i) if i >= &0 => a.prove((*i) as usize),
+                _ => Err(anyhow!("Invalid key {} for container {}.", key, self))?,
+            },
+            TypedValue::Dictionary(d) => d.prove(&key.typed().clone().try_into()?),
+            TypedValue::Set(s) => Ok((key, s.prove(key)?)),
+            _ => Err(anyhow!("Invalid container value {}", self.typed())),
+        }
+    }
+    /// Determines Merkle non-existence proof for `key` in `self` (if applicable).
+    pub(crate) fn prove_nonexistence<'a>(&'a self, key: &'a Value) -> Result<MerkleProof> {
+        match &self.typed() {
+            TypedValue::Array(_) => Err(anyhow!("Arrays do not support `NotContains` operation.")),
+            TypedValue::Dictionary(d) => d.prove_nonexistence(&key.typed().clone().try_into()?),
+            TypedValue::Set(s) => s.prove_nonexistence(key),
+            _ => Err(anyhow!("Invalid container value {}", self.typed())),
+        }
     }
 }
 
