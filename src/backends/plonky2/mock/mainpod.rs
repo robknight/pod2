@@ -2,7 +2,7 @@
 // MainPod
 //
 
-use std::{any::Any, fmt};
+use std::fmt;
 
 use anyhow::{anyhow, Result};
 use base64::{prelude::BASE64_STANDARD, Engine};
@@ -277,13 +277,6 @@ impl Pod for MockMainPod {
             .collect()
     }
 
-    fn into_any(self: Box<Self>) -> Box<dyn Any> {
-        self
-    }
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn serialized_proof(&self) -> String {
         BASE64_STANDARD.encode(serde_json::to_string(self).unwrap())
     }
@@ -291,6 +284,8 @@ impl Pod for MockMainPod {
 
 #[cfg(test)]
 pub mod tests {
+    use std::any::Any;
+
     use super::*;
     use crate::{
         backends::plonky2::mock::signedpod::MockSigner,
@@ -323,7 +318,9 @@ pub mod tests {
 
         let mut prover = MockProver {};
         let kyc_pod = kyc_builder.prove(&mut prover, &params)?;
-        let pod = kyc_pod.pod.into_any().downcast::<MockMainPod>().unwrap();
+        let pod = (kyc_pod.pod as Box<dyn Any>)
+            .downcast::<MockMainPod>()
+            .unwrap();
 
         println!("{:#}", pod);
 
@@ -340,9 +337,7 @@ pub mod tests {
 
         let mut prover = MockProver {};
         let great_boy_pod = great_boy_builder.prove(&mut prover, &params)?;
-        let pod = great_boy_pod
-            .pod
-            .into_any()
+        let pod = (great_boy_pod.pod as Box<dyn Any>)
             .downcast::<MockMainPod>()
             .unwrap();
 
@@ -359,7 +354,9 @@ pub mod tests {
         let tickets_builder = tickets_pod_full_flow()?;
         let mut prover = MockProver {};
         let proof_pod = tickets_builder.prove(&mut prover, &params)?;
-        let pod = proof_pod.pod.into_any().downcast::<MockMainPod>().unwrap();
+        let pod = (proof_pod.pod as Box<dyn Any>)
+            .downcast::<MockMainPod>()
+            .unwrap();
 
         println!("{}", pod);
         pod.verify()?;
