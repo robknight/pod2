@@ -1,24 +1,26 @@
 use std::collections::HashMap;
 
-use anyhow::{anyhow, Result};
 use itertools::Itertools;
 
 use crate::{
-    backends::plonky2::primitives::{
-        merkletree::MerkleTree,
-        signature::{PublicKey, SecretKey, Signature},
+    backends::plonky2::{
+        error::{Error, Result},
+        primitives::{
+            merkletree::MerkleTree,
+            signature::{PublicKey, SecretKey, Signature},
+        },
     },
     constants::MAX_DEPTH,
     middleware::{
-        containers::Dictionary, AnchoredKey, Hash, Key, Params, Pod, PodId, PodSigner, PodType,
-        RawValue, Statement, Value, KEY_SIGNER, KEY_TYPE,
+        containers::Dictionary, AnchoredKey, DynError, Hash, Key, Params, Pod, PodId, PodSigner,
+        PodType, RawValue, Statement, Value, KEY_SIGNER, KEY_TYPE,
     },
 };
 
 pub struct Signer(pub SecretKey);
 
-impl PodSigner for Signer {
-    fn sign(&mut self, _params: &Params, kvs: &HashMap<Key, Value>) -> Result<Box<dyn Pod>> {
+impl Signer {
+    fn _sign(&mut self, _params: &Params, kvs: &HashMap<Key, Value>) -> Result<SignedPod> {
         let mut kvs = kvs.clone();
         let pubkey = self.0.public_key();
         kvs.insert(Key::from(KEY_SIGNER), Value::from(pubkey.0));
@@ -28,11 +30,21 @@ impl PodSigner for Signer {
         let id = RawValue::from(dict.commitment()); // PodId as Value
 
         let signature: Signature = self.0.sign(id)?;
-        Ok(Box::new(SignedPod {
+        Ok(SignedPod {
             id: PodId(Hash::from(id)),
             signature,
             dict,
-        }))
+        })
+    }
+}
+
+impl PodSigner for Signer {
+    fn sign(
+        &mut self,
+        params: &Params,
+        kvs: &HashMap<Key, Value>,
+    ) -> Result<Box<dyn Pod>, Box<DynError>> {
+        Ok(self._sign(params, kvs).map(Box::new)?)
     }
 }
 
@@ -43,15 +55,14 @@ pub struct SignedPod {
     pub dict: Dictionary,
 }
 
-impl Pod for SignedPod {
-    fn verify(&self) -> Result<()> {
+impl SignedPod {
+    fn _verify(&self) -> Result<()> {
         // 1. Verify type
         let value_at_type = self.dict.get(&Key::from(KEY_TYPE))?;
         if Value::from(PodType::Signed) != *value_at_type {
-            return Err(anyhow!(
-                "type does not match, expected Signed ({}), found {}",
+            return Err(Error::type_not_equal(
                 PodType::Signed,
-                value_at_type
+                value_at_type.clone(),
             ));
         }
 
@@ -67,11 +78,7 @@ impl Pod for SignedPod {
         )?;
         let id = PodId(mt.root());
         if id != self.id {
-            return Err(anyhow!(
-                "id does not match, expected {}, computed {}",
-                self.id,
-                id
-            ));
+            return Err(Error::id_not_equal(self.id, id));
         }
 
         // 3. Verify signature
@@ -80,6 +87,12 @@ impl Pod for SignedPod {
         self.signature.verify(&pk, RawValue::from(id.0))?;
 
         Ok(())
+    }
+}
+
+impl Pod for SignedPod {
+    fn verify(&self) -> Result<(), Box<DynError>> {
+        Ok(self._verify().map_err(Box::new)?)
     }
 
     fn id(&self) -> PodId {
@@ -135,7 +148,7 @@ pub mod tests {
         let pod = pod.sign(&mut signer).unwrap();
         let pod = (pod.pod as Box<dyn Any>).downcast::<SignedPod>().unwrap();
 
-        pod.verify()?;
+        pod._verify()?;
         println!("id: {}", pod.id());
         println!("kvs: {:?}", pod.kvs());
 

@@ -4,12 +4,12 @@
 
 use std::fmt;
 
-use anyhow::{anyhow, Result};
 use base64::{prelude::BASE64_STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     backends::plonky2::{
+        error::{Error, Result},
         mainpod::{
             extract_merkle_proofs, hash_statements, layout_statements, normalize_statement,
             process_private_statements_operations, process_public_statements_operations, Operation,
@@ -18,15 +18,19 @@ use crate::{
         primitives::merkletree::MerkleClaimAndProof,
     },
     middleware::{
-        self, hash_str, AnchoredKey, MainPodInputs, NativePredicate, Params, Pod, PodId, PodProver,
-        Predicate, StatementArg, KEY_TYPE, SELF,
+        self, hash_str, AnchoredKey, DynError, MainPodInputs, NativePredicate, Params, Pod, PodId,
+        PodProver, Predicate, StatementArg, KEY_TYPE, SELF,
     },
 };
 
 pub struct MockProver {}
 
 impl PodProver for MockProver {
-    fn prove(&mut self, params: &Params, inputs: MainPodInputs) -> Result<Box<dyn Pod>> {
+    fn prove(
+        &mut self,
+        params: &Params,
+        inputs: MainPodInputs,
+    ) -> Result<Box<dyn Pod>, Box<DynError>> {
         Ok(Box::new(MockMainPod::new(params, inputs)?))
     }
 }
@@ -177,10 +181,8 @@ impl MockMainPod {
 
         Ok(pod)
     }
-}
 
-impl Pod for MockMainPod {
-    fn verify(&self) -> Result<()> {
+    fn _verify(&self) -> Result<()> {
         // 1. TODO: Verify input pods
 
         let input_statement_offset = self.offset_input_statements();
@@ -245,23 +247,27 @@ impl Pod for MockMainPod {
                     .unwrap()
                     .check_and_log(&self.params, &s.clone().try_into().unwrap())
             })
-            .collect::<Result<Vec<_>>>()
+            .collect::<Result<Vec<_>, middleware::Error>>()
             .unwrap();
         if !ids_match {
-            return Err(anyhow!("Verification failed: POD ID is incorrect."));
+            return Err(Error::pod_id_invalid());
         }
         if !has_type_statement {
-            return Err(anyhow!(
-                "Verification failed: POD does not have type statement."
-            ));
+            return Err(Error::not_type_statement());
         }
         if !value_ofs_unique {
-            return Err(anyhow!("Verification failed: Repeated ValueOf"));
+            return Err(Error::repeated_value_of());
         }
         if !statement_check.iter().all(|b| *b) {
-            return Err(anyhow!("Verification failed: Statement did not check."));
+            return Err(Error::statement_not_check());
         }
         Ok(())
+    }
+}
+
+impl Pod for MockMainPod {
+    fn verify(&self) -> Result<(), Box<DynError>> {
+        Ok(self._verify()?)
     }
     fn id(&self) -> PodId {
         self.id
@@ -293,11 +299,12 @@ pub mod tests {
             great_boy_pod_full_flow, tickets_pod_full_flow, zu_kyc_pod_builder,
             zu_kyc_sign_pod_builders,
         },
+        frontend,
         middleware::{self},
     };
 
     #[test]
-    fn test_mock_main_zu_kyc() -> Result<()> {
+    fn test_mock_main_zu_kyc() -> frontend::Result<()> {
         let params = middleware::Params::default();
         let (gov_id_builder, pay_stub_builder, sanction_list_builder) =
             zu_kyc_sign_pod_builders(&params);
@@ -331,7 +338,7 @@ pub mod tests {
     }
 
     #[test]
-    fn test_mock_main_great_boy() -> Result<()> {
+    fn test_mock_main_great_boy() -> frontend::Result<()> {
         let params = middleware::Params::default();
         let great_boy_builder = great_boy_pod_full_flow()?;
 
@@ -349,7 +356,7 @@ pub mod tests {
     }
 
     #[test]
-    fn test_mock_main_tickets() -> Result<()> {
+    fn test_mock_main_tickets() -> frontend::Result<()> {
         let params = middleware::Params::default();
         let tickets_builder = tickets_pod_full_flow()?;
         let mut prover = MockProver {};

@@ -1,14 +1,13 @@
 use std::{fmt, iter};
 
-use anyhow::{anyhow, Result};
 use plonky2::field::types::Field;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use strum_macros::FromRepr;
 
 use crate::middleware::{
-    AnchoredKey, CustomPredicateRef, Key, Params, PodId, Predicate, RawValue, ToFields, Value, F,
-    VALUE_SIZE,
+    AnchoredKey, CustomPredicateRef, Error, Key, Params, PodId, Predicate, RawValue, Result,
+    ToFields, Value, F, VALUE_SIZE,
 };
 
 // TODO: Maybe store KEY_SIGNER and KEY_TYPE as Key with lazy_static
@@ -152,7 +151,7 @@ impl Statement {
                 {
                     Ok(Self::ValueOf(a0, v1))
                 } else {
-                    Err(anyhow!("Incorrect statement args"))
+                    Err(Error::incorrect_statements_args())
                 }
             }
             Native(NativePredicate::Equal) => {
@@ -161,7 +160,7 @@ impl Statement {
                 {
                     Ok(Self::Equal(a0, a1))
                 } else {
-                    Err(anyhow!("Incorrect statement args"))
+                    Err(Error::incorrect_statements_args())
                 }
             }
             Native(NativePredicate::NotEqual) => {
@@ -170,7 +169,7 @@ impl Statement {
                 {
                     Ok(Self::NotEqual(a0, a1))
                 } else {
-                    Err(anyhow!("Incorrect statement args"))
+                    Err(Error::incorrect_statements_args())
                 }
             }
             Native(NativePredicate::Gt) => {
@@ -179,7 +178,7 @@ impl Statement {
                 {
                     Ok(Self::Gt(a0, a1))
                 } else {
-                    Err(anyhow!("Incorrect statement args"))
+                    Err(Error::incorrect_statements_args())
                 }
             }
             Native(NativePredicate::Lt) => {
@@ -188,7 +187,7 @@ impl Statement {
                 {
                     Ok(Self::Lt(a0, a1))
                 } else {
-                    Err(anyhow!("Incorrect statement args"))
+                    Err(Error::incorrect_statements_args())
                 }
             }
             Native(NativePredicate::Contains) => {
@@ -197,7 +196,7 @@ impl Statement {
                 {
                     Ok(Self::Contains(a0, a1, a2))
                 } else {
-                    Err(anyhow!("Incorrect statement args"))
+                    Err(Error::incorrect_statements_args())
                 }
             }
             Native(NativePredicate::NotContains) => {
@@ -206,7 +205,7 @@ impl Statement {
                 {
                     Ok(Self::NotContains(a0, a1))
                 } else {
-                    Err(anyhow!("Incorrect statement args"))
+                    Err(Error::incorrect_statements_args())
                 }
             }
             Native(NativePredicate::SumOf) => {
@@ -215,7 +214,7 @@ impl Statement {
                 {
                     Ok(Self::SumOf(a0, a1, a2))
                 } else {
-                    Err(anyhow!("Incorrect statement args"))
+                    Err(Error::incorrect_statements_args())
                 }
             }
             Native(NativePredicate::ProductOf) => {
@@ -224,7 +223,7 @@ impl Statement {
                 {
                     Ok(Self::ProductOf(a0, a1, a2))
                 } else {
-                    Err(anyhow!("Incorrect statement args"))
+                    Err(Error::incorrect_statements_args())
                 }
             }
             Native(NativePredicate::MaxOf) => {
@@ -233,17 +232,17 @@ impl Statement {
                 {
                     Ok(Self::MaxOf(a0, a1, a2))
                 } else {
-                    Err(anyhow!("Incorrect statement args"))
+                    Err(Error::incorrect_statements_args())
                 }
             }
-            Native(np) => Err(anyhow!("Predicate {:?} is syntax sugar", np)),
+            Native(np) => Err(Error::custom(format!("Predicate {:?} is syntax sugar", np))),
             BatchSelf(_) => unreachable!(),
             Custom(cpr) => {
                 let v_args: Result<Vec<WildcardValue>> = args
                     .iter()
                     .map(|x| match x {
                         StatementArg::WildcardLiteral(v) => Ok(v.clone()),
-                        _ => Err(anyhow!("Incorrect statement args")),
+                        _ => Err(Error::incorrect_statements_args()),
                     })
                     .collect();
                 Ok(Self::Custom(cpr, v_args?))
@@ -302,13 +301,19 @@ impl StatementArg {
     pub fn literal(&self) -> Result<Value> {
         match self {
             Self::Literal(value) => Ok(value.clone()),
-            _ => Err(anyhow!("Statement argument {:?} is not a literal.", self)),
+            _ => Err(Error::invalid_statement_arg(
+                self.clone(),
+                "literal".to_string(),
+            )),
         }
     }
     pub fn key(&self) -> Result<AnchoredKey> {
         match self {
             Self::Key(ak) => Ok(ak.clone()),
-            _ => Err(anyhow!("Statement argument {:?} is not a key.", self)),
+            _ => Err(Error::invalid_statement_arg(
+                self.clone(),
+                "key".to_string(),
+            )),
         }
     }
 }

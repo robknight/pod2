@@ -10,7 +10,6 @@
 //!
 use std::iter;
 
-use anyhow::Result;
 use plonky2::{
     field::types::Field,
     hash::{
@@ -28,6 +27,7 @@ use crate::{
     backends::plonky2::{
         basetypes::D,
         circuits::common::{CircuitBuilderPod, ValueTarget},
+        error::Result,
         primitives::merkletree::MerkleClaimAndProof,
     },
     middleware::{EMPTY_HASH, EMPTY_VALUE, F, HASH_SIZE},
@@ -408,7 +408,10 @@ pub mod tests {
 
     use super::*;
     use crate::{
-        backends::plonky2::{basetypes::C, primitives::merkletree::*},
+        backends::plonky2::{
+            basetypes::C,
+            primitives::merkletree::{keypath, kv_hash, MerkleTree},
+        },
         middleware::{hash_value, RawValue},
     };
 
@@ -693,6 +696,8 @@ pub mod tests {
         assert_eq!(
             MerkleTree::verify(max_depth, tree2.root(), &proof, &key, &value)
                 .unwrap_err()
+                .inner()
+                .unwrap()
                 .to_string(),
             "proof of inclusion does not verify"
         );

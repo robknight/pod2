@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     backends::plonky2::mock::{mainpod::MockMainPod, signedpod::MockSignedPod},
-    frontend::{MainPod, SignedPod, Statement},
+    frontend::{Error, MainPod, SignedPod, Statement},
     middleware::{containers::Dictionary, Key, PodId, Value},
 };
 
@@ -20,14 +20,14 @@ pub struct SignedPodHelper {
 }
 
 impl TryFrom<SignedPodHelper> for SignedPod {
-    type Error = anyhow::Error;
+    type Error = Error;
 
     fn try_from(helper: SignedPodHelper) -> Result<SignedPod, Self::Error> {
         if helper.pod_class != "Signed" {
-            return Err(anyhow::anyhow!("pod_class is not Signed"));
+            return Err(Error::custom("pod_class is not Signed"));
         }
         if helper.pod_type != "Mock" {
-            return Err(anyhow::anyhow!("pod_type is not Mock"));
+            return Err(Error::custom("pod_type is not Mock"));
         }
 
         let dict = Dictionary::new(helper.entries.clone())?.clone();
@@ -62,18 +62,18 @@ pub struct MainPodHelper {
 }
 
 impl TryFrom<MainPodHelper> for MainPod {
-    type Error = anyhow::Error; // or you can create a custom error type
+    type Error = Error; // or you can create a custom error type
 
     fn try_from(helper: MainPodHelper) -> Result<Self, Self::Error> {
         if helper.pod_class != "Main" {
-            return Err(anyhow::anyhow!("pod_class is not Main"));
+            return Err(Error::custom("pod_class is not Main"));
         }
         if helper.pod_type != "Mock" {
-            return Err(anyhow::anyhow!("pod_type is not Mock"));
+            return Err(Error::custom("pod_type is not Mock"));
         }
 
         let pod = MockMainPod::deserialize(helper.proof)
-            .map_err(|e| anyhow::anyhow!("Failed to deserialize proof: {}", e))?;
+            .map_err(|e| Error::custom(format!("Failed to deserialize proof: {}", e)))?;
 
         Ok(MainPod {
             pod: Box::new(pod),
@@ -97,12 +97,10 @@ impl From<MainPod> for MainPodHelper {
 mod tests {
     use std::collections::HashSet;
 
-    use anyhow::Result;
     // Pretty assertions give nicer diffs between expected and actual values
     use pretty_assertions::assert_eq;
     use schemars::schema_for;
 
-    //  use schemars::generate::SchemaSettings;
     use super::*;
     use crate::{
         backends::plonky2::mock::{mainpod::MockProver, signedpod::MockSigner},
@@ -110,7 +108,7 @@ mod tests {
             eth_dos_pod_builder, eth_friend_signed_pod_builder, zu_kyc_pod_builder,
             zu_kyc_sign_pod_builders,
         },
-        frontend::SignedPodBuilder,
+        frontend::{Result, SignedPodBuilder},
         middleware::{
             self,
             containers::{Array, Set},

@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
-use anyhow::Result;
 use StatementTmplBuilder as STB;
 
 use crate::{
-    frontend::{key, literal, CustomPredicateBatchBuilder, StatementTmplBuilder},
+    frontend::{key, literal, CustomPredicateBatchBuilder, Result, StatementTmplBuilder},
     middleware::{
         CustomPredicateBatch, CustomPredicateRef, NativePredicate as NP, Params, PodType,
         Predicate, KEY_SIGNER, KEY_TYPE,

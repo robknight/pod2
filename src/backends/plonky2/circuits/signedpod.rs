@@ -1,6 +1,5 @@
 use std::iter;
 
-use anyhow::Result;
 use itertools::Itertools;
 use plonky2::{
     hash::hash_types::{HashOut, HashOutTarget},
@@ -15,6 +14,7 @@ use crate::{
     backends::plonky2::{
         basetypes::D,
         circuits::common::{CircuitBuilderPod, StatementArgTarget, StatementTarget, ValueTarget},
+        error::Result,
         primitives::{
             merkletree::{
                 MerkleClaimAndProof, MerkleProofExistenceGadget, MerkleProofExistenceTarget,

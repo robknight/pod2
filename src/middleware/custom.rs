@@ -1,12 +1,11 @@
 use std::{fmt, iter, sync::Arc};
 
-use anyhow::{anyhow, Result};
 use plonky2::field::types::Field;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::middleware::{
-    hash_fields, Hash, Key, NativePredicate, Params, ToFields, Value, F, HASH_SIZE,
+    hash_fields, Error, Hash, Key, NativePredicate, Params, Result, ToFields, Value, F, HASH_SIZE,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -217,7 +216,11 @@ impl CustomPredicate {
         args_len: usize,
     ) -> Result<Self> {
         if statements.len() > params.max_custom_predicate_arity {
-            return Err(anyhow!("Custom predicate depends on too many statements"));
+            return Err(Error::max_length(
+                "statements.len".to_string(),
+                statements.len(),
+                params.max_custom_predicate_arity,
+            ));
         }
 
         Ok(Self {
@@ -394,7 +397,6 @@ impl fmt::Display for Predicate {
 mod tests {
     use std::{array, sync::Arc};
 
-    use anyhow::Result;
     use plonky2::field::goldilocks_field::GoldilocksField;
 
     use super::*;

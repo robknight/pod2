@@ -8,21 +8,21 @@ use std::{
     hash,
 };
 
-use anyhow::anyhow;
 use containers::{Array, Dictionary, Set};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 pub mod containers;
 mod custom;
+mod error;
 mod operation;
 pub mod serialization;
 mod statement;
 use std::{any::Any, collections::HashMap, fmt};
 
-use anyhow::Result;
 pub use basetypes::*;
 pub use custom::*;
 use dyn_clone::DynClone;
+pub use error::*;
 pub use operation::*;
 use serialization::*;
 pub use statement::*;
@@ -126,22 +126,25 @@ impl From<PodType> for TypedValue {
 }
 
 impl TryFrom<&TypedValue> for i64 {
-    type Error = anyhow::Error;
+    type Error = Error;
     fn try_from(v: &TypedValue) -> std::result::Result<Self, Self::Error> {
         if let TypedValue::Int(n) = v {
             Ok(*n)
         } else {
-            Err(anyhow!("Value not an int"))
+            Err(Error::custom("Value not an int".to_string()))
         }
     }
 }
 
 impl TryFrom<TypedValue> for Key {
-    type Error = anyhow::Error;
+    type Error = Error;
     fn try_from(tv: TypedValue) -> Result<Self> {
         match tv {
             TypedValue::String(s) => Ok(Key::new(s)),
-            _ => Err(anyhow!("Value {} cannot be converted to a key.", tv)),
+            _ => Err(Error::custom(format!(
+                "Value {} cannot be converted to a key.",
+                tv
+            ))),
         }
     }
 }
@@ -367,20 +370,31 @@ impl Value {
         match &self.typed() {
             TypedValue::Array(a) => match key.typed() {
                 TypedValue::Int(i) if i >= &0 => a.prove((*i) as usize),
-                _ => Err(anyhow!("Invalid key {} for container {}.", key, self))?,
+                _ => Err(Error::custom(format!(
+                    "Invalid key {} for container {}.",
+                    key, self
+                )))?,
             },
             TypedValue::Dictionary(d) => d.prove(&key.typed().clone().try_into()?),
             TypedValue::Set(s) => Ok((key, s.prove(key)?)),
-            _ => Err(anyhow!("Invalid container value {}", self.typed())),
+            _ => Err(Error::custom(format!(
+                "Invalid container value {}",
+                self.typed()
+            ))),
         }
     }
     /// Determines Merkle non-existence proof for `key` in `self` (if applicable).
     pub(crate) fn prove_nonexistence<'a>(&'a self, key: &'a Value) -> Result<MerkleProof> {
         match &self.typed() {
-            TypedValue::Array(_) => Err(anyhow!("Arrays do not support `NotContains` operation.")),
+            TypedValue::Array(_) => Err(Error::custom(
+                "Arrays do not support `NotContains` operation.".to_string(),
+            )),
             TypedValue::Dictionary(d) => d.prove_nonexistence(&key.typed().clone().try_into()?),
             TypedValue::Set(s) => s.prove_nonexistence(key),
-            _ => Err(anyhow!("Invalid container value {}", self.typed())),
+            _ => Err(Error::custom(format!(
+                "Invalid container value {}",
+                self.typed()
+            ))),
         }
     }
 }
@@ -654,8 +668,10 @@ impl Params {
     }
 }
 
+pub type DynError = dyn std::error::Error + Send + Sync;
+
 pub trait Pod: fmt::Debug + DynClone + Any {
-    fn verify(&self) -> Result<()>;
+    fn verify(&self) -> Result<(), Box<DynError>>;
     fn id(&self) -> PodId;
     fn pub_statements(&self) -> Vec<Statement>;
     /// Extract key-values from ValueOf public statements
@@ -683,7 +699,11 @@ pub trait Pod: fmt::Debug + DynClone + Any {
 dyn_clone::clone_trait_object!(Pod);
 
 pub trait PodSigner {
-    fn sign(&mut self, params: &Params, kvs: &HashMap<Key, Value>) -> Result<Box<dyn Pod>>;
+    fn sign(
+        &mut self,
+        params: &Params,
+        kvs: &HashMap<Key, Value>,
+    ) -> Result<Box<dyn Pod>, Box<DynError>>;
 }
 
 /// This is a filler type that fulfills the Pod trait and always verifies.  It's empty.  This
@@ -692,7 +712,7 @@ pub trait PodSigner {
 pub struct NonePod {}
 
 impl Pod for NonePod {
-    fn verify(&self) -> Result<()> {
+    fn verify(&self) -> Result<(), Box<DynError>> {
         Ok(())
     }
     fn id(&self) -> PodId {
@@ -718,7 +738,11 @@ pub struct MainPodInputs<'a> {
 }
 
 pub trait PodProver {
-    fn prove(&mut self, params: &Params, inputs: MainPodInputs) -> Result<Box<dyn Pod>>;
+    fn prove(
+        &mut self,
+        params: &Params,
+        inputs: MainPodInputs,
+    ) -> Result<Box<dyn Pod>, Box<DynError>>;
 }
 
 pub trait ToFields {

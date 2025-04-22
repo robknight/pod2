@@ -2,12 +2,11 @@ pub mod custom;
 
 use std::collections::HashSet;
 
-use anyhow::Result;
 use custom::{eth_dos_batch, eth_friend_batch};
 
 use crate::{
     backends::plonky2::mock::signedpod::MockSigner,
-    frontend::{MainPodBuilder, SignedPod, SignedPodBuilder},
+    frontend::{MainPodBuilder, Result, SignedPod, SignedPodBuilder},
     middleware::{
         containers::Set, CustomPredicateRef, Params, PodType, Statement, TypedValue, Value,
         KEY_SIGNER, KEY_TYPE,

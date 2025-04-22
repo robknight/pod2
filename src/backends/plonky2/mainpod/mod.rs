@@ -2,7 +2,6 @@ pub mod operation;
 pub mod statement;
 use std::any::Any;
 
-use anyhow::{anyhow, Result};
 use itertools::Itertools;
 pub use operation::*;
 use plonky2::{
@@ -19,12 +18,13 @@ use crate::{
     backends::plonky2::{
         basetypes::{C, D},
         circuits::mainpod::{MainPodVerifyCircuit, MainPodVerifyInput},
+        error::{Error, Result},
         primitives::merkletree::MerkleClaimAndProof,
         signedpod::SignedPod,
     },
     middleware::{
-        self, AnchoredKey, Hash, MainPodInputs, NativeOperation, NonePod, OperationType, Params,
-        Pod, PodId, PodProver, PodType, StatementArg, ToFields, F, KEY_TYPE, SELF,
+        self, AnchoredKey, DynError, Hash, MainPodInputs, NativeOperation, NonePod, OperationType,
+        Params, Pod, PodId, PodProver, PodType, StatementArg, ToFields, F, KEY_TYPE, SELF,
     },
 };
 
@@ -70,11 +70,11 @@ pub(crate) fn extract_merkle_proofs(
         })
         .collect();
     if merkle_proofs.len() > params.max_merkle_proofs {
-        return Err(anyhow!(
+        return Err(Error::custom(format!(
             "The number of required Merkle proofs ({}) exceeds the maximum number ({}).",
             merkle_proofs.len(),
             params.max_merkle_proofs
-        ));
+        )));
     }
     Ok(merkle_proofs)
 }
@@ -90,10 +90,10 @@ fn find_op_arg(statements: &[Statement], op_arg: &middleware::Statement) -> Resu
                 (&middleware::Statement::try_from(s.clone()).ok()? == op_arg).then_some(i)
             })
             .map(OperationArg::Index)
-            .ok_or(anyhow!(
+            .ok_or(Error::custom(format!(
                 "Statement corresponding to op arg {} not found",
                 op_arg
-            )),
+            ))),
     }
 }
 
@@ -109,10 +109,10 @@ fn find_op_aux(
             .enumerate()
             .find_map(|(i, pf)| (pf.proof == *pf_arg).then_some(i))
             .map(OperationAux::MerkleProofIndex)
-            .ok_or(anyhow!(
+            .ok_or(Error::custom(format!(
                 "Merkle proof corresponding to op arg {} not found",
                 op_aux
-            )),
+            ))),
     }
 }
 
@@ -279,8 +279,8 @@ pub(crate) fn process_public_statements_operations(
 
 pub struct Prover {}
 
-impl PodProver for Prover {
-    fn prove(&mut self, params: &Params, inputs: MainPodInputs) -> Result<Box<dyn Pod>> {
+impl Prover {
+    fn _prove(&mut self, params: &Params, inputs: MainPodInputs) -> Result<MainPod> {
         let config = CircuitConfig::standard_recursion_config();
         let mut builder = CircuitBuilder::<F, D>::new(config);
         let main_pod = MainPodVerifyCircuit {
@@ -328,12 +328,22 @@ impl PodProver for Prover {
         let data = builder.build::<C>();
         let proof = data.prove(pw)?;
 
-        Ok(Box::new(MainPod {
+        Ok(MainPod {
             params: params.clone(),
             id,
             public_statements,
             proof,
-        }))
+        })
+    }
+}
+
+impl PodProver for Prover {
+    fn prove(
+        &mut self,
+        params: &Params,
+        inputs: MainPodInputs,
+    ) -> Result<Box<dyn Pod>, Box<DynError>> {
+        Ok(self._prove(params, inputs).map(Box::new)?)
     }
 }
 
@@ -364,16 +374,12 @@ pub(crate) fn normalize_statement(statement: &Statement, self_id: PodId) -> midd
     .unwrap()
 }
 
-impl Pod for MainPod {
-    fn verify(&self) -> Result<()> {
+impl MainPod {
+    fn _verify(&self) -> Result<()> {
         // 2. get the id out of the public statements
         let id: PodId = PodId(hash_statements(&self.public_statements, &self.params));
         if id != self.id {
-            return Err(anyhow!(
-                "id does not match, expected {}, computed {}",
-                self.id,
-                id
-            ));
+            return Err(Error::id_not_equal(self.id, id));
         }
 
         // 1, 3, 4, 5 verification via the zkSNARK proof
@@ -387,7 +393,13 @@ impl Pod for MainPod {
 
         let data = builder.build::<C>();
         data.verify(self.proof.clone())
-            .map_err(|e| anyhow!("MainPod proof verification failure: {:?}", e))
+            .map_err(|e| Error::custom(format!("MainPod proof verification failure: {:?}", e)))
+    }
+}
+
+impl Pod for MainPod {
+    fn verify(&self) -> Result<(), Box<DynError>> {
+        Ok(self._verify()?)
     }
 
     fn id(&self) -> PodId {
@@ -418,13 +430,14 @@ pub mod tests {
             signedpod::Signer,
         },
         examples::{zu_kyc_pod_builder, zu_kyc_sign_pod_builders},
-        frontend, middleware,
+        frontend::{self},
+        middleware,
         middleware::RawValue,
         op,
     };
 
     #[test]
-    fn test_main_zu_kyc() -> Result<()> {
+    fn test_main_zu_kyc() -> frontend::Result<()> {
         let params = middleware::Params {
             // Currently the circuit uses random access that only supports vectors of length 64.
             // With max_input_main_pods=3 we need random access to a vector of length 73.
@@ -447,7 +460,7 @@ pub mod tests {
         let kyc_pod = kyc_builder.prove(&mut prover, &params)?;
         let pod = (kyc_pod.pod as Box<dyn Any>).downcast::<MainPod>().unwrap();
 
-        pod.verify()
+        Ok(pod.verify()?)
     }
 
     #[test]

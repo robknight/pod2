@@ -2,7 +2,6 @@
 
 use std::{array, iter};
 
-use anyhow::Result;
 use plonky2::{
     field::{
         extension::Extendable,
@@ -19,6 +18,7 @@ use plonky2::{
 use crate::{
     backends::plonky2::{
         basetypes::D,
+        error::Result,
         mainpod::{Operation, OperationArg, Statement},
         primitives::merkletree::MerkleClaimAndProofTarget,
     },
@@ -75,7 +75,7 @@ impl StatementArgTarget {
         params: &Params,
         arg: &StatementArg,
     ) -> Result<()> {
-        pw.set_target_arr(&self.elements, &arg.to_fields(params))
+        Ok(pw.set_target_arr(&self.elements, &arg.to_fields(params))?)
     }
 
     fn new(first: ValueTarget, second: ValueTarget) -> Self {
