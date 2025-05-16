@@ -11,7 +11,12 @@ use crate::{
 };
 
 /// Instantiates an ETH friend batch
-pub fn eth_friend_batch(params: &Params) -> Result<Arc<CustomPredicateBatch>> {
+pub fn eth_friend_batch(params: &Params, mock: bool) -> Result<Arc<CustomPredicateBatch>> {
+    let pod_type = if mock {
+        PodType::MockSigned
+    } else {
+        PodType::Signed
+    };
     let mut builder = CustomPredicateBatchBuilder::new(params.clone(), "eth_friend".into());
     let _eth_friend = builder.predicate_and(
         "eth_friend",
@@ -24,7 +29,7 @@ pub fn eth_friend_batch(params: &Params) -> Result<Arc<CustomPredicateBatch>> {
             // there is an attestation pod that's a SignedPod
             STB::new(NP::ValueOf)
                 .arg(("attestation_pod", key(KEY_TYPE)))
-                .arg(literal(PodType::MockSigned)), // TODO
+                .arg(literal(pod_type)),
             // the attestation pod is signed by (src_or, src_key)
             STB::new(NP::Equal)
                 .arg(("attestation_pod", key(KEY_SIGNER)))
@@ -41,8 +46,8 @@ pub fn eth_friend_batch(params: &Params) -> Result<Arc<CustomPredicateBatch>> {
 }
 
 /// Instantiates an ETHDoS batch
-pub fn eth_dos_batch(params: &Params) -> Result<Arc<CustomPredicateBatch>> {
-    let eth_friend = Predicate::Custom(CustomPredicateRef::new(eth_friend_batch(params)?, 0));
+pub fn eth_dos_batch(params: &Params, mock: bool) -> Result<Arc<CustomPredicateBatch>> {
+    let eth_friend = Predicate::Custom(CustomPredicateRef::new(eth_friend_batch(params, mock)?, 0));
     let mut builder =
         CustomPredicateBatchBuilder::new(params.clone(), "eth_dos_distance_base".into());
 

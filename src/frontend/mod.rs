@@ -793,7 +793,7 @@ pub mod build_utils {
         (max_of, $($arg:expr),+) => { $crate::frontend::Operation(
             $crate::middleware::OperationType::Native($crate::middleware::NativeOperation::MaxOf),
             $crate::op_args!($($arg),*), $crate::middleware::OperationAux::None) };
-        (custom, $op:expr, $($arg:expr),+) => { $crate::frontend::Operation(
+        (custom, $op:expr, $($arg:expr),*) => { $crate::frontend::Operation(
             $crate::middleware::OperationType::Custom($op),
             $crate::op_args!($($arg),*), $crate::middleware::OperationAux::None) };
         (dict_contains, $dict:expr, $key:expr, $value:expr) => { $crate::frontend::Operation(
@@ -925,18 +925,19 @@ pub mod tests {
         // Alice attests that she is ETH friends with Charlie and Charlie
         // attests that he is ETH friends with Bob.
         let alice_attestation =
-            eth_friend_signed_pod_builder(&params, charlie.pubkey().into()).sign(&mut alice)?;
+            eth_friend_signed_pod_builder(&params, charlie.public_key().into()).sign(&mut alice)?;
         check_kvs(&alice_attestation)?;
         let charlie_attestation =
-            eth_friend_signed_pod_builder(&params, bob.pubkey().into()).sign(&mut charlie)?;
+            eth_friend_signed_pod_builder(&params, bob.public_key().into()).sign(&mut charlie)?;
         check_kvs(&charlie_attestation)?;
 
         let mut prover = MockProver {};
         let alice_bob_ethdos = eth_dos_pod_builder(
             &params,
+            true,
             &alice_attestation,
             &charlie_attestation,
-            &bob.pubkey().into(),
+            bob.public_key().into(),
         )?
         .prove(&mut prover, &params)?;
 
