@@ -484,7 +484,7 @@ impl ToFields for Key {
 
 impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name)?;
+        write!(f, "\"{}\"", self.name)?;
         Ok(())
     }
 }
@@ -546,7 +546,10 @@ impl AnchoredKey {
 
 impl fmt::Display for AnchoredKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}", self.pod_id, self.key)?;
+        self.pod_id.fmt(f)?;
+        write!(f, "[")?;
+        self.key.fmt(f)?;
+        write!(f, "]")?;
         Ok(())
     }
 }
