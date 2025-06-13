@@ -27,7 +27,8 @@ fn get_span(pair: &Pair<Rule>) -> (usize, usize) {
 
 pub fn native_predicate_from_string(s: &str) -> Option<NativePredicate> {
     match s {
-        "ValueOf" => Some(NativePredicate::ValueOf),
+        // TODO: update any code that still uses ValueOf to use Equal instead
+        "ValueOf" => Some(NativePredicate::Equal),
         "Equal" => Some(NativePredicate::Equal),
         "NotEqual" => Some(NativePredicate::NotEqual),
         // Syntactic sugar for Gt/GtEq is handled at a later stage
@@ -347,17 +348,16 @@ fn validate_and_build_statement_template(
 ) -> Result<StatementTmplBuilder, ProcessorError> {
     match pred {
         Predicate::Native(native_pred) => {
-            let (expected_arity, mapped_pred_for_arity_check) = match native_pred {
-                NativePredicate::Gt => (2, NativePredicate::Lt),
-                NativePredicate::GtEq => (2, NativePredicate::LtEq),
-                NativePredicate::ValueOf
+            let expected_arity = match native_pred {
+                NativePredicate::Gt
+                | NativePredicate::GtEq
                 | NativePredicate::Equal
                 | NativePredicate::NotEqual
                 | NativePredicate::Lt
                 | NativePredicate::LtEq
                 | NativePredicate::SetContains
                 | NativePredicate::DictNotContains
-                | NativePredicate::SetNotContains => (2, *native_pred),
+                | NativePredicate::SetNotContains => 2,
                 NativePredicate::NotContains
                 | NativePredicate::Contains
                 | NativePredicate::ArrayContains
@@ -365,8 +365,8 @@ fn validate_and_build_statement_template(
                 | NativePredicate::SumOf
                 | NativePredicate::ProductOf
                 | NativePredicate::MaxOf
-                | NativePredicate::HashOf => (3, *native_pred),
-                NativePredicate::None | NativePredicate::False => (0, *native_pred),
+                | NativePredicate::HashOf => 3,
+                NativePredicate::None | NativePredicate::False => 0,
             };
 
             if args.len() != expected_arity {
@@ -378,30 +378,9 @@ fn validate_and_build_statement_template(
                 });
             }
 
-            if mapped_pred_for_arity_check == NativePredicate::ValueOf {
-                if !matches!(args.get(0), Some(BuilderArg::Key(..))) {
-                    return Err(ProcessorError::TypeError {
-                        expected: "Anchored Key".to_string(),
-                        found: args
-                            .get(0)
-                            .map_or("None".to_string(), |a| format!("{:?}", a)),
-                        item: format!("argument 1 of native predicate '{}'", stmt_name_str),
-                        span: Some(stmt_span),
-                    });
-                }
-                if !matches!(args.get(1), Some(BuilderArg::Literal(..))) {
-                    return Err(ProcessorError::TypeError {
-                        expected: "Literal".to_string(),
-                        found: args
-                            .get(1)
-                            .map_or("None".to_string(), |a| format!("{:?}", a)),
-                        item: format!("argument 2 of native predicate '{}'", stmt_name_str),
-                        span: Some(stmt_span),
-                    });
-                }
-            } else if expected_arity > 0 {
+            if expected_arity > 0 {
                 for (i, arg) in args.iter().enumerate() {
-                    if !matches!(arg, BuilderArg::Key(..)) {
+                    if !matches!(arg, BuilderArg::Key(..) | BuilderArg::Literal(..)) {
                         return Err(ProcessorError::TypeError {
                             expected: "Anchored Key".to_string(),
                             found: format!("{:?}", arg),
@@ -1056,7 +1035,7 @@ mod processor_tests {
     fn test_fp_multiple_predicates() -> Result<(), ProcessorError> {
         let input = r#"
             pred1(X) = AND( Equal(?X["k"],?X["k"]) )
-            pred2(Y, Z) = OR( ValueOf(?Y["v"], 123) )
+            pred2(Y, Z) = OR( Equal(?Y["v"], 123) )
         "#;
         let pairs = get_document_content_pairs(input)?;
         let params = Params::default();

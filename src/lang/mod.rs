@@ -115,7 +115,7 @@ mod tests {
     fn test_e2e_simple_request() -> Result<(), LangError> {
         let input = r#"
             REQUEST(
-                ValueOf(?ConstPod["my_val"], 0x0000000000000000000000000000000000000000000000000000000000000001)
+                Equal(?ConstPod["my_val"], 0x0000000000000000000000000000000000000000000000000000000000000001)
                 Lt(?GovPod["dob"], ?ConstPod["my_val"])
             )
         "#;
@@ -133,7 +133,7 @@ mod tests {
         // Expected structure
         let expected_templates = vec![
             StatementTmpl {
-                pred: Predicate::Native(NativePredicate::ValueOf),
+                pred: Predicate::Native(NativePredicate::Equal),
                 args: vec![
                     sta_ak(("ConstPod", 0), k("my_val")), // ?ConstPod["my_val"] -> Wildcard(0), Key("my_val")
                     sta_lit(SELF_ID_HASH),
@@ -158,7 +158,7 @@ mod tests {
         let input = r#"
             uses_private(A, private: Temp) = AND(
                 Equal(?A["input_key"], ?Temp["const_key"])
-                ValueOf(?Temp["const_key"], "some_value")
+                Equal(?Temp["const_key"], "some_value")
             )
         "#;
 
@@ -182,7 +182,7 @@ mod tests {
                 ],
             },
             StatementTmpl {
-                pred: Predicate::Native(NativePredicate::ValueOf),
+                pred: Predicate::Native(NativePredicate::Equal),
                 args: vec![
                     sta_ak(("Temp", 1), k("const_key")), // ?Temp["const_key"] -> Wildcard(1), Key("const_key")
                     sta_lit("some_value"),               // Literal("some_value")
@@ -390,8 +390,8 @@ mod tests {
                 Lt(?gov["dateOfBirth"], ?SELF_HOLDER_18Y["const_18y"])      
                 Equal(?pay["startDate"], ?SELF_HOLDER_1Y["const_1y"])         
                 Equal(?gov["socialSecurityNumber"], ?pay["socialSecurityNumber"]) 
-                ValueOf(?SELF_HOLDER_18Y["const_18y"], 1169909388)               
-                ValueOf(?SELF_HOLDER_1Y["const_1y"], 1706367566)                  
+                Equal(?SELF_HOLDER_18Y["const_18y"], 1169909388)               
+                Equal(?SELF_HOLDER_1Y["const_1y"], 1706367566)                  
             )
         "#;
 
@@ -463,9 +463,9 @@ mod tests {
                     sta_ak((wc_pay.name.as_str(), wc_pay.index), ssn_key.clone()),
                 ],
             },
-            // 5. ValueOf(?SELF_HOLDER_18Y["const_18y"], 1169909388)
+            // 5. Equal(?SELF_HOLDER_18Y["const_18y"], 1169909388)
             StatementTmpl {
-                pred: Predicate::Native(NativePredicate::ValueOf),
+                pred: Predicate::Native(NativePredicate::Equal),
                 args: vec![
                     sta_ak(
                         (wc_self_18y.name.as_str(), wc_self_18y.index),
@@ -474,9 +474,9 @@ mod tests {
                     sta_lit(now_minus_18y_val.clone()),
                 ],
             },
-            // 6. ValueOf(?SELF_HOLDER_1Y["const_1y"], 1706367566)
+            // 6. Equal(?SELF_HOLDER_1Y["const_1y"], 1706367566)
             StatementTmpl {
-                pred: Predicate::Native(NativePredicate::ValueOf),
+                pred: Predicate::Native(NativePredicate::Equal),
                 args: vec![
                     sta_ak(
                         (wc_self_1y.name.as_str(), wc_self_1y.index),
@@ -518,19 +518,19 @@ mod tests {
 
         let input = r#"
             eth_friend(src_key, dst_key, private: attestation_pod) = AND(
-                ValueOf(?attestation_pod["_type"], 1)
+                Equal(?attestation_pod["_type"], 1)
                 Equal(?attestation_pod["_signer"], SELF[?src_key])
                 Equal(?attestation_pod["attestation"], SELF[?dst_key])
             )
 
             eth_dos_distance_base(src_key, dst_key, distance_key) = AND(
                 Equal(SELF[?src_key], SELF[?dst_key])
-                ValueOf(SELF[?distance_key], 0)
+                Equal(SELF[?distance_key], 0)
             )
 
             eth_dos_distance_ind(src_key, dst_key, distance_key, private: one_key, shorter_distance_key, intermed_key) = AND(
                 eth_dos_distance(?src_key, ?dst_key, ?distance_key)
-                ValueOf(SELF[?one_key], 1)
+                Equal(SELF[?one_key], 1)
                 SumOf(SELF[?distance_key], SELF[?shorter_distance_key], SELF[?one_key])
                 eth_friend(?intermed_key, ?dst_key)
             )
@@ -558,7 +558,7 @@ mod tests {
         // eth_friend (Index 0)
         let expected_friend_stmts = vec![
             StatementTmpl {
-                pred: Predicate::Native(NativePredicate::ValueOf),
+                pred: Predicate::Native(NativePredicate::Equal),
                 args: vec![
                     sta_ak(("attestation_pod", 2), k("_type")), // Pub(0-1), Priv(2)
                     sta_lit(PodType::MockSigned),
@@ -598,7 +598,7 @@ mod tests {
                 ],
             },
             StatementTmpl {
-                pred: Predicate::Native(NativePredicate::ValueOf),
+                pred: Predicate::Native(NativePredicate::Equal),
                 args: vec![sta_ak_self(ko_wc("distance_key", 2)), sta_lit(0i64)],
             },
         ];
@@ -625,7 +625,7 @@ mod tests {
                 ],
             },
             StatementTmpl {
-                pred: Predicate::Native(NativePredicate::ValueOf),
+                pred: Predicate::Native(NativePredicate::Equal),
                 args: vec![sta_ak_self(ko_wc("one_key", 3)), sta_lit(1i64)], // private arg
             },
             StatementTmpl {

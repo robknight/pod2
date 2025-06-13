@@ -671,8 +671,7 @@ impl Default for Params {
             max_signed_pod_values: 8,
             max_public_statements: 10,
             num_public_statements_id: 16,
-            // TODO: Reduce to 5 or less after https://github.com/0xPARC/pod2/issues/229
-            max_statement_args: 6,
+            max_statement_args: 5,
             max_operation_args: 5,
             max_custom_predicate_batches: 2,
             max_custom_predicate_verifications: 5,
@@ -793,7 +792,7 @@ pub trait Pod: fmt::Debug + DynClone + Any {
         self.pub_statements()
             .into_iter()
             .filter_map(|st| match st {
-                Statement::ValueOf(ak, v) => Some((ak, v)),
+                Statement::Equal(ValueRef::Key(ak), ValueRef::Literal(v)) => Some((ak, v)),
                 _ => None,
             })
             .collect()
