@@ -10,7 +10,7 @@ use serialization::{SerializedMainPod, SerializedSignedPod};
 use crate::middleware::{
     self, check_st_tmpl, hash_op, hash_str, max_op, prod_op, sum_op, AnchoredKey, Key,
     MainPodInputs, NativeOperation, OperationAux, OperationType, Params, PodId, PodProver,
-    PodSigner, Statement, StatementArg, VDSet, Value, ValueRef, WildcardValue, KEY_TYPE, SELF,
+    PodSigner, Statement, StatementArg, VDSet, Value, ValueRef, KEY_TYPE, SELF,
 };
 
 mod custom;
@@ -49,6 +49,8 @@ impl SignedPodBuilder {
         self.kvs.insert(key.into(), value.into());
     }
 
+    // TODO: Remove mut because Schnorr signature doesn't need any mutability of the signer, the
+    // nonces are sourced from OS randomness.
     pub fn sign<S: PodSigner>(&self, signer: &mut S) -> Result<SignedPod> {
         // Sign POD with committed KV store.
         let pod = signer.sign(&self.params, &self.kvs)?;
@@ -471,12 +473,15 @@ impl MainPodBuilder {
                     let st_args = st.args();
                     for (st_tmpl_arg, st_arg) in st_tmpl.args.iter().zip(&st_args) {
                         if !check_st_tmpl(st_tmpl_arg, st_arg, &mut wildcard_map) {
-                            // TODO: Add wildcard_map in the error for better context
-                            return Err(Error::statements_dont_match(st.clone(), st_tmpl.clone()));
+                            return Err(Error::statements_dont_match(
+                                st.clone(),
+                                st_tmpl.clone(),
+                                wildcard_map,
+                            ));
                         }
                     }
                 }
-                let v_default = WildcardValue::PodId(SELF);
+                let v_default = Value::from(0);
                 let st_args: Vec<_> = wildcard_map
                     .into_iter()
                     .take(pred.args_len)
@@ -762,7 +767,7 @@ pub mod build_utils {
 
     #[macro_export]
     macro_rules! op {
-        (new_entry, ($key:expr, $value:expr)) => { $crate::frontend::Operation(
+        (new_entry, $key:expr, $value:expr) => { $crate::frontend::Operation(
             $crate::middleware::OperationType::Native($crate::middleware::NativeOperation::NewEntry),
             $crate::op_args!(($key, $value)), $crate::middleware::OperationAux::None) };
         (copy, $($arg:expr),+) => { $crate::frontend::Operation(
@@ -821,14 +826,15 @@ pub mod build_utils {
 
 #[cfg(test)]
 pub mod tests {
+
     use super::*;
     use crate::{
         backends::plonky2::mock::{mainpod::MockProver, signedpod::MockSigner},
         examples::{
-            eth_dos_pod_builder, eth_friend_signed_pod_builder, great_boy_pod_full_flow,
-            tickets_pod_full_flow, zu_kyc_pod_builder, zu_kyc_sign_pod_builders,
+            attest_eth_friend, great_boy_pod_full_flow, tickets_pod_full_flow, zu_kyc_pod_builder,
+            zu_kyc_sign_pod_builders, EthDosHelper, MOCK_VD_SET,
         },
-        middleware::{containers::Dictionary, Value, DEFAULT_VD_SET},
+        middleware::{containers::Dictionary, Value},
     };
 
     // Check that frontend public statements agree with those
@@ -863,7 +869,7 @@ pub mod tests {
     #[test]
     fn test_front_zu_kyc() -> Result<()> {
         let params = Params::default();
-        let vd_set = &*DEFAULT_VD_SET;
+        let vd_set = &*MOCK_VD_SET;
         let (gov_id, pay_stub, sanction_list) = zu_kyc_sign_pod_builders(&params);
 
         println!("{}", gov_id);
@@ -903,49 +909,45 @@ pub mod tests {
     }
 
     #[test]
-    fn test_ethdos() -> Result<()> {
+    fn test_ethdos_recursive() -> Result<()> {
         let params = Params {
-            max_input_signed_pods: 3,
-            max_input_recursive_pods: 3,
-            max_statements: 31,
-            max_signed_pod_values: 8,
-            max_public_statements: 10,
-            max_statement_args: 6,
-            max_operation_args: 5,
-            max_custom_predicate_arity: 5,
-            max_custom_batch_size: 5,
-            max_custom_predicate_wildcards: 12,
+            max_input_pods_public_statements: 8,
+            max_statements: 24,
+            max_public_statements: 8,
             ..Default::default()
         };
-        let vd_set = &*DEFAULT_VD_SET;
+        let vd_set = &*MOCK_VD_SET;
 
         let mut alice = MockSigner { pk: "Alice".into() };
-        let bob = MockSigner { pk: "Bob".into() };
+        let mut bob = MockSigner { pk: "Bob".into() };
         let mut charlie = MockSigner {
             pk: "Charlie".into(),
         };
+        let david = MockSigner { pk: "David".into() };
 
-        // Alice attests that she is ETH friends with Charlie and Charlie
-        // attests that he is ETH friends with Bob.
-        let alice_attestation =
-            eth_friend_signed_pod_builder(&params, charlie.public_key().into()).sign(&mut alice)?;
-        check_kvs(&alice_attestation)?;
-        let charlie_attestation =
-            eth_friend_signed_pod_builder(&params, bob.public_key().into()).sign(&mut charlie)?;
-        check_kvs(&charlie_attestation)?;
+        let helper = EthDosHelper::new(&params, vd_set, true, alice.public_key())?;
 
         let mut prover = MockProver {};
-        let alice_bob_ethdos = eth_dos_pod_builder(
-            &params,
-            &vd_set,
-            true,
-            &alice_attestation,
-            &charlie_attestation,
-            bob.public_key().into(),
-        )?
-        .prove(&mut prover, &params)?;
 
-        check_public_statements(&alice_bob_ethdos)
+        let alice_attestation = attest_eth_friend(&params, &mut alice, bob.public_key());
+        let dist_1 = helper
+            .dist_1(&alice_attestation)?
+            .prove(&mut prover, &params)?;
+        dist_1.pod.verify()?;
+
+        let bob_attestation = attest_eth_friend(&params, &mut bob, charlie.public_key());
+        let dist_2 = helper
+            .dist_n_plus_1(&dist_1, &bob_attestation)?
+            .prove(&mut prover, &params)?;
+        dist_2.pod.verify()?;
+
+        let charlie_attestation = attest_eth_friend(&params, &mut charlie, david.public_key());
+        let dist_3 = helper
+            .dist_n_plus_1(&dist_2, &charlie_attestation)?
+            .prove(&mut prover, &params)?;
+        dist_3.pod.verify()?;
+
+        Ok(())
     }
 
     #[test]
@@ -971,7 +973,7 @@ pub mod tests {
     #[should_panic]
     fn test_equal() {
         let params = Params::default();
-        let vd_set = &*DEFAULT_VD_SET;
+        let vd_set = &*MOCK_VD_SET;
 
         let mut signed_builder = SignedPodBuilder::new(&params);
         signed_builder.insert("a", 1);
@@ -1023,7 +1025,7 @@ pub mod tests {
     #[should_panic]
     fn test_false_st() {
         let params = Params::default();
-        let vd_set = &*DEFAULT_VD_SET;
+        let vd_set = &*MOCK_VD_SET;
         let mut builder = SignedPodBuilder::new(&params);
 
         builder.insert("num", 2);
@@ -1049,7 +1051,7 @@ pub mod tests {
     #[test]
     fn test_dictionaries() -> Result<()> {
         let params = Params::default();
-        let vd_set = &*DEFAULT_VD_SET;
+        let vd_set = &*MOCK_VD_SET;
         let mut builder = SignedPodBuilder::new(&params);
 
         let mut my_dict_kvs: HashMap<Key, Value> = HashMap::new();
@@ -1070,7 +1072,7 @@ pub mod tests {
         let mut builder = MainPodBuilder::new(&params, &vd_set);
         builder.add_signed_pod(&pod);
         let st0 = pod.get_statement("dict").unwrap();
-        let st1 = builder.op(true, op!(new_entry, ("key", "a"))).unwrap();
+        let st1 = builder.op(true, op!(new_entry, "key", "a")).unwrap();
         let st2 = builder.literal(false, Value::from(1)).unwrap();
 
         builder
@@ -1103,7 +1105,7 @@ pub mod tests {
         env_logger::init();
 
         let params = Params::default();
-        let vd_set = &*DEFAULT_VD_SET;
+        let vd_set = &*MOCK_VD_SET;
         let mut builder = MainPodBuilder::new(&params, &vd_set);
         let st = Statement::equal(AnchoredKey::from((SELF, "a")), Value::from(3));
         let op_new_entry = Operation(
@@ -1127,7 +1129,7 @@ pub mod tests {
         // try to insert a statement that doesn't follow from the operation
         // right now the mock prover catches this when it calls compile()
         let params = Params::default();
-        let vd_set = &*DEFAULT_VD_SET;
+        let vd_set = &*MOCK_VD_SET;
         let mut builder = MainPodBuilder::new(&params, &vd_set);
         let self_a = AnchoredKey::from((SELF, "a"));
         let self_b = AnchoredKey::from((SELF, "b"));

@@ -31,9 +31,8 @@ use crate::{
     middleware::{
         CustomPredicate, CustomPredicateBatch, CustomPredicateRef, NativeOperation,
         NativePredicate, OperationType, Params, Predicate, PredicatePrefix, RawValue, StatementArg,
-        StatementTmpl, StatementTmplArg, StatementTmplArgPrefix, ToFields, Value, WildcardValue,
-        EMPTY_VALUE, F, HASH_SIZE, OPERATION_ARG_F_LEN, OPERATION_AUX_F_LEN, STATEMENT_ARG_F_LEN,
-        VALUE_SIZE,
+        StatementTmpl, StatementTmplArg, StatementTmplArgPrefix, ToFields, Value, EMPTY_VALUE, F,
+        HASH_SIZE, OPERATION_ARG_F_LEN, OPERATION_AUX_F_LEN, STATEMENT_ARG_F_LEN, VALUE_SIZE,
     },
 };
 
@@ -597,7 +596,7 @@ impl CustomPredicateVerifyEntryTarget {
         // Replace statement templates of batch-self with (id,index)
         self.custom_predicate
             .set_targets(pw, params, &cpv.custom_predicate)?;
-        let pad_arg = WildcardValue::None;
+        let pad_arg = Value::from(0);
         for (arg_target, arg) in self.args.iter().zip_eq(
             cpv.args
                 .iter()
@@ -1427,11 +1426,8 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::{
-        backends::plonky2::basetypes::C,
-        examples::custom::{eth_dos_batch, eth_friend_batch},
-        frontend,
-        frontend::CustomPredicateBatchBuilder,
-        middleware::CustomPredicateBatch,
+        backends::plonky2::basetypes::C, examples::custom::eth_dos_batch, frontend,
+        frontend::CustomPredicateBatchBuilder, middleware::CustomPredicateBatch,
     };
 
     pub(crate) const I64_TEST_PAIRS: [(i64, i64); 36] = [
@@ -1481,7 +1477,7 @@ pub(crate) mod tests {
         let params = Params::default();
         let config = CircuitConfig::standard_recursion_config();
 
-        let custom_predicate_batch = eth_friend_batch(&params, false)?;
+        let custom_predicate_batch = eth_dos_batch(&params, false)?;
 
         for (i, cp) in custom_predicate_batch.predicates().iter().enumerate() {
             let mut builder = CircuitBuilder::<F, D>::new(config.clone());
@@ -1544,9 +1540,6 @@ pub(crate) mod tests {
         helper_custom_predicate_batch_target_id(&params, &custom_predicate_batch).unwrap();
 
         // Some cases from the examples
-        let custom_predicate_batch = eth_friend_batch(&params, false)?;
-        helper_custom_predicate_batch_target_id(&params, &custom_predicate_batch).unwrap();
-
         let custom_predicate_batch = eth_dos_batch(&params, false)?;
         helper_custom_predicate_batch_target_id(&params, &custom_predicate_batch).unwrap();
 

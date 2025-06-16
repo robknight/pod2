@@ -10,9 +10,9 @@ use crate::{
     },
     constants::MAX_DEPTH,
     middleware::{
-        containers::Dictionary, hash_str, serialization::ordered_map, AnchoredKey, DynError, Hash,
-        Key, Params, Pod, PodId, PodSigner, PodType, RawValue, Statement, Value, KEY_SIGNER,
-        KEY_TYPE, SELF,
+        containers::Dictionary, hash_str, serialization::ordered_map, AnchoredKey, DynError, Key,
+        Params, Pod, PodId, PodSigner, PodType, RawValue, Statement, Value, KEY_SIGNER, KEY_TYPE,
+        SELF,
     },
 };
 
@@ -21,8 +21,8 @@ pub struct MockSigner {
 }
 
 impl MockSigner {
-    pub fn public_key(&self) -> Hash {
-        hash_str(&self.pk)
+    pub fn public_key(&self) -> Value {
+        Value::from(hash_str(&self.pk))
     }
 }
 
@@ -30,7 +30,7 @@ impl MockSigner {
     fn _sign(&mut self, params: &Params, kvs: &HashMap<Key, Value>) -> Result<MockSignedPod> {
         let mut kvs = kvs.clone();
         let pubkey = self.public_key();
-        kvs.insert(Key::from(KEY_SIGNER), Value::from(pubkey));
+        kvs.insert(Key::from(KEY_SIGNER), pubkey.clone());
         kvs.insert(Key::from(KEY_TYPE), Value::from(PodType::MockSigned));
 
         let dict = Dictionary::new(params.max_depth_mt_containers, kvs.clone())?;
