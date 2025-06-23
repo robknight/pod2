@@ -3,7 +3,7 @@
 //! We roughly follow pornin/ecgfp5.
 use core::ops::{Add, Mul};
 use std::{
-    array,
+    array, fmt,
     ops::{AddAssign, Neg, Sub},
     sync::LazyLock,
 };
@@ -23,7 +23,7 @@ use plonky2::{
     util::serialization::{Read, Write},
 };
 use rand::rngs::OsRng;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::backends::plonky2::{
     circuits::common::ValueTarget,
@@ -94,10 +94,63 @@ fn ec_field_from_bytes(b: &[u8]) -> Result<ECField, Error> {
     Ok(QuinticExtension(array::from_fn(|i| fields[i])))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Point {
     pub x: ECField,
     pub u: ECField,
+}
+
+impl fmt::Display for Point {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        #[allow(clippy::collapsible_else_if)]
+        if f.alternate() {
+            write!(f, "({}, {})", self.x, self.u)
+        } else {
+            if self.is_in_subgroup() {
+                // Compressed
+                let u_bytes = self.as_bytes_from_subgroup().expect("point in subgroup");
+                let u_b58 = bs58::encode(u_bytes).into_string();
+                write!(f, "{}", u_b58)
+            } else {
+                // Non-compressed
+                let xu_bytes = [ec_field_to_bytes(&self.x), ec_field_to_bytes(&self.u)].concat();
+                let xu_b58 = bs58::encode(xu_bytes).into_string();
+                write!(f, "{}", xu_b58)
+            }
+        }
+    }
+}
+
+impl Serialize for Point {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let point_b58 = format!("{}", self);
+        serializer.serialize_str(&point_b58)
+    }
+}
+
+impl<'de> Deserialize<'de> for Point {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let point_b58 = String::deserialize(deserializer)?;
+        let point_bytes: Vec<u8> = bs58::decode(point_b58)
+            .into_vec()
+            .map_err(serde::de::Error::custom)?;
+        if point_bytes.len() == 80 {
+            // Non-compressed
+            Ok(Point {
+                x: ec_field_from_bytes(&point_bytes[..40]).map_err(serde::de::Error::custom)?,
+                u: ec_field_from_bytes(&point_bytes[40..]).map_err(serde::de::Error::custom)?,
+            })
+        } else {
+            // Compressed
+            Self::from_bytes_into_subgroup(&point_bytes).map_err(serde::de::Error::custom)
+        }
+    }
 }
 
 impl Point {
@@ -111,8 +164,8 @@ impl Point {
         match self.is_in_subgroup() {
             true => Ok(self.u),
             false => Err(Error::custom(format!(
-                "Point must lie in EC subgroup: ({}, {})",
-                self.x, self.u
+                "Point must lie in EC subgroup: {}",
+                self
             ))),
         }
     }
@@ -810,7 +863,7 @@ mod test {
             match p == q {
                 true => Ok(()),
                 false => Err(Error::custom(format!(
-                    "Roundtrip compression failed: {:?} ≠ {:?}",
+                    "Roundtrip compression failed: {} ≠ {}",
                     p, q
                 ))),
             }
@@ -895,6 +948,30 @@ mod test {
         pw.set_point_target(&pt, &not_sub)?;
         let data = builder.build::<PoseidonGoldilocksConfig>();
         assert!(data.prove(pw).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_point_serialize_deserialize() -> Result<(), anyhow::Error> {
+        // In subgroup
+        let g = Point::generator();
+
+        let serialized = serde_json::to_string_pretty(&g)?;
+        println!("g = {}", serialized);
+        let deserialized = serde_json::from_str(&serialized)?;
+        assert_eq!(g, deserialized);
+
+        // Not in subgroup
+        let not_sub = Point {
+            x: Point::b() / g.x,
+            u: g.u,
+        };
+
+        let serialized = serde_json::to_string_pretty(&not_sub)?;
+        println!("not_sub = {}", serialized);
+        let deserialized = serde_json::from_str(&serialized)?;
+        assert_eq!(not_sub, deserialized);
+
         Ok(())
     }
 }
