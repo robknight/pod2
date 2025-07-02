@@ -17,7 +17,7 @@ pub enum SignedPodType {
     MockSigned,
 }
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[schemars(rename = "SignedPod")]
 pub struct SerializedSignedPod {
@@ -27,7 +27,7 @@ pub struct SerializedSignedPod {
     data: serde_json::Value,
 }
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[schemars(rename = "MainPod")]
 pub struct SerializedMainPod {
@@ -154,11 +154,11 @@ mod tests {
                     ]))
                     .unwrap(),
                 ),
-                "{\"Dictionary\":{\"max_depth\":32,\"kvs\":{\"\":\"baz\",\"\\u0000\":\"\",\"    hi\":false,\"!@£$%^&&*()\":\"\",\"foo\":{\"Int\":\"123\"},\"🥳\":\"party time!\"}}}",
+                "{\"max_depth\":32,\"kvs\":{\"\":\"baz\",\"\\u0000\":\"\",\"    hi\":false,\"!@£$%^&&*()\":\"\",\"foo\":{\"Int\":\"123\"},\"🥳\":\"party time!\"}}",
             ),
             (
                 TypedValue::Set(Set::new(params.max_depth_mt_containers, HashSet::from(["foo".into(), "bar".into()])).unwrap()),
-                "{\"Set\":{\"max_depth\":32,\"set\":[\"bar\",\"foo\"]}}",
+                "{\"max_depth\":32,\"set\":[\"bar\",\"foo\"]}",
             ),
         ];
 

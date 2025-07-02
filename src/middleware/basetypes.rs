@@ -125,6 +125,40 @@ impl fmt::Display for RawValue {
     }
 }
 
+impl ToHex for RawValue {
+    fn encode_hex<T: std::iter::FromIterator<char>>(&self) -> T {
+        self.0
+            .iter()
+            .rev()
+            .fold(String::with_capacity(64), |mut s, limb| {
+                write!(s, "{:016x}", limb.0).unwrap();
+                s
+            })
+            .chars()
+            .collect()
+    }
+
+    fn encode_hex_upper<T: std::iter::FromIterator<char>>(&self) -> T {
+        self.0
+            .iter()
+            .rev()
+            .fold(String::with_capacity(64), |mut s, limb| {
+                write!(s, "{:016X}", limb.0).unwrap();
+                s
+            })
+            .chars()
+            .collect()
+    }
+}
+
+impl FromHex for RawValue {
+    type Error = FromHexError;
+
+    fn from_hex<T: AsRef<[u8]>>(hex: T) -> Result<Self, Self::Error> {
+        Hash::from_hex(hex).map(|h| RawValue(h.0))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Hash, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Hash(
     #[serde(
