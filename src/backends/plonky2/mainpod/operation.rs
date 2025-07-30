@@ -1,6 +1,5 @@
 use std::fmt;
 
-use plonky2::field::types::Field;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -9,7 +8,7 @@ use crate::{
         mainpod::Statement,
         primitives::merkletree::MerkleClaimAndProof,
     },
-    middleware::{self, OperationType, Params, ToFields, F},
+    middleware::{self, OperationType},
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -18,19 +17,16 @@ pub enum OperationArg {
     Index(usize),
 }
 
-impl ToFields for OperationArg {
-    fn to_fields(&self, _params: &Params) -> Vec<F> {
-        let f = match self {
-            Self::None => F::ZERO,
-            Self::Index(i) => F::from_canonical_usize(*i),
-        };
-        vec![f]
-    }
-}
-
 impl OperationArg {
     pub fn is_none(&self) -> bool {
         matches!(self, OperationArg::None)
+    }
+
+    pub fn as_usize(&self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::Index(i) => *i,
+        }
     }
 }
 
@@ -41,14 +37,13 @@ pub enum OperationAux {
     CustomPredVerifyIndex(usize),
 }
 
-impl ToFields for OperationAux {
-    fn to_fields(&self, _params: &Params) -> Vec<F> {
-        let fs = match self {
-            Self::None => [F::ZERO, F::ZERO],
-            Self::MerkleProofIndex(i) => [F::from_canonical_usize(*i), F::ZERO],
-            Self::CustomPredVerifyIndex(i) => [F::ZERO, F::from_canonical_usize(*i)],
-        };
-        vec![fs[0], fs[1]]
+impl OperationAux {
+    pub fn as_usizes(&self) -> [usize; 2] {
+        match self {
+            Self::None => [0, 0],
+            Self::MerkleProofIndex(i) => [*i, 0],
+            Self::CustomPredVerifyIndex(i) => [0, *i],
+        }
     }
 }
 

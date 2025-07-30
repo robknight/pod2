@@ -828,8 +828,8 @@ impl Params {
         Self::predicate_size() + STATEMENT_ARG_F_LEN * self.max_statement_args
     }
 
-    pub fn operation_size(&self) -> usize {
-        Self::operation_type_size() + OPERATION_ARG_F_LEN * self.max_operation_args
+    pub fn operation_size(&self, operation_arg_f_len: usize) -> usize {
+        Self::operation_type_size() + operation_arg_f_len * self.max_operation_args
     }
 
     pub const fn statement_tmpl_size(&self) -> usize {
@@ -842,6 +842,14 @@ impl Params {
 
     pub fn custom_predicate_batch_size_field_elts(&self) -> usize {
         self.max_custom_batch_size * self.custom_predicate_size()
+    }
+
+    /// Total size of the statement table including None, input statements from signed pods and
+    /// input recursive pods and new statements (public & private)
+    pub fn statement_table_size(&self) -> usize {
+        1 + self.max_input_signed_pods * self.max_signed_pod_values
+            + self.max_input_recursive_pods * self.max_input_pods_public_statements
+            + self.max_statements
     }
 
     /// Parameters that define how the id is calculated
