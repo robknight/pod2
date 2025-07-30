@@ -12,8 +12,8 @@ use crate::{
         deserialize_bytes,
         primitives::ec::{curve::Point, schnorr::SecretKey},
     },
-    frontend::{BuilderArg, CustomPredicateBatchBuilder, StatementTmplBuilder},
-    lang::Rule,
+    frontend::{BuilderArg, CustomPredicateBatchBuilder, PodRequest, StatementTmplBuilder},
+    lang::parser::Rule,
     middleware::{
         self, CustomPredicateBatch, CustomPredicateRef, Key, NativePredicate, Params, Predicate,
         StatementTmpl, StatementTmplArg, Value, Wildcard, F, VALUE_SIZE,
@@ -57,7 +57,7 @@ pub fn native_predicate_from_string(s: &str) -> Option<NativePredicate> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PodlangOutput {
     pub custom_batch: Arc<CustomPredicateBatch>,
-    pub request_templates: Vec<StatementTmpl>,
+    pub request: PodRequest,
 }
 
 struct ProcessingContext<'a> {
@@ -295,7 +295,7 @@ fn second_pass(
 
     Ok(PodlangOutput {
         custom_batch,
-        request_templates,
+        request: PodRequest::new(request_templates),
     })
 }
 
