@@ -5,15 +5,13 @@ use num::{BigUint, One};
 use plonky2::{
     field::types::Field,
     hash::{
-        hash_types::{HashOutTarget, RichField, NUM_HASH_OUT_ELTS},
-        hashing::PlonkyPermutation,
+        hash_types::HashOutTarget,
         poseidon::{PoseidonHash, PoseidonPermutation},
     },
     iop::{
         target::{BoolTarget, Target},
         witness::{PartialWitness, WitnessWrite},
     },
-    plonk::config::AlgebraicHasher,
 };
 use plonky2_u32::gadgets::multiple_comparison::list_le_circuit;
 use serde::{Deserialize, Serialize};
@@ -29,15 +27,18 @@ use crate::{
                 OperationTypeTarget, PredicateTarget, StatementArgTarget, StatementTarget,
                 StatementTmplArgTarget, StatementTmplTarget, ValueTarget,
             },
+            hash::{hash_from_state_circuit, precompute_hash_state},
+            mux_table::{MuxTableTarget, TableEntryTarget},
             signedpod::{verify_signed_pod_circuit, SignedPodVerifyTarget},
         },
         emptypod::{cache_get_standard_empty_pod_circuit_data, EmptyPod},
         error::Result,
-        mainpod::{self, pad_statement, OperationArg},
+        mainpod::{self, pad_statement},
         primitives::{
             ec::{
                 bits::{BigUInt320Target, CircuitBuilderBits},
                 curve::{CircuitBuilderElliptic, Point, WitnessWriteCurve, GROUP_ORDER},
+                schnorr::SecretKey,
             },
             merkletree::{
                 verify_merkle_proof_circuit, MerkleClaimAndProof, MerkleClaimAndProofTarget,
@@ -49,8 +50,8 @@ use crate::{
     measure_gates_begin, measure_gates_end,
     middleware::{
         AnchoredKey, CustomPredicate, CustomPredicateBatch, CustomPredicateRef, NativeOperation,
-        NativePredicate, OperationType, Params, PodType, PredicatePrefix, Statement, StatementArg,
-        ToFields, TypedValue, Value, ValueRef, F, HASH_SIZE, KEY_TYPE, SELF, VALUE_SIZE,
+        NativePredicate, Params, PodType, PredicatePrefix, Statement, StatementArg, ToFields,
+        Value, ValueRef, F, HASH_SIZE, KEY_TYPE, SELF, VALUE_SIZE,
     },
 };
 //
@@ -184,6 +185,144 @@ fn verify_operation_public_statement_circuit(
     Ok(())
 }
 
+enum OperationAuxTableTag {
+    None = 0,
+    MerkleProof = 1,
+    PublicKeyOf = 2,
+    CustomPredVerify = 3,
+}
+
+fn max_operation_aux_entry_len(params: &Params) -> usize {
+    [
+        (params.max_merkle_proofs_containers > 0).then(|| MerkleClaimTarget::size(params)),
+        (params.max_public_key_of > 0).then(|| KeyPairTarget::size(params)),
+        (params.max_custom_predicate_verifications > 0)
+            .then(|| CustomPredicateVerifyQueryTarget::size(params)),
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+    .unwrap_or(0)
+}
+
+#[derive(Copy, Clone)]
+struct KeyPairTarget {
+    pk_hash: HashOutTarget,
+    sk_hash: HashOutTarget,
+}
+
+impl Flattenable for KeyPairTarget {
+    fn flatten(&self) -> Vec<Target> {
+        self.pk_hash
+            .elements
+            .into_iter()
+            .chain(self.sk_hash.elements)
+            .collect()
+    }
+    fn from_flattened(params: &Params, vs: &[Target]) -> Self {
+        assert_eq!(vs.len(), Self::size(params));
+        Self {
+            pk_hash: HashOutTarget::try_from(&vs[..4]).expect("len = 4"),
+            sk_hash: HashOutTarget::try_from(&vs[4..]).expect("len = 4"),
+        }
+    }
+    fn size(_params: &Params) -> usize {
+        8
+    }
+}
+
+fn build_operation_aux_table_circuit(
+    params: &Params,
+    builder: &mut CircuitBuilder,
+    merkle_proofs: &[MerkleClaimAndProofTarget],
+    public_key_of_sks: &[BigUInt320Target],
+    custom_predicate_verifications: &[CustomPredicateVerifyEntryTarget],
+    custom_predicate_table: &[HashOutTarget],
+) -> Result<MuxTableTarget> {
+    let measure = measure_gates_begin!(builder, "BuildOpAuxTbl");
+    assert_eq!(
+        params.max_custom_predicate_verifications,
+        custom_predicate_verifications.len()
+    );
+    assert_eq!(params.max_merkle_proofs_containers, merkle_proofs.len());
+    let max_entry_len = max_operation_aux_entry_len(params);
+    let mut table = MuxTableTarget::new(params, max_entry_len);
+
+    // None
+    table.push_flattened(builder, OperationAuxTableTag::None as u32, &[]);
+
+    // MerkleProofs: verify container merkle proofs (inclusion/non-inclusion)
+    for merkle_proof in merkle_proofs {
+        verify_merkle_proof_circuit(builder, merkle_proof);
+        let entry = MerkleClaimTarget::from(merkle_proof.clone());
+
+        table.push(builder, OperationAuxTableTag::MerkleProof as u32, &entry);
+    }
+
+    // PublicKeyOf: verify the derivation from a Schnorr secret key to public key
+    for sk in public_key_of_sks {
+        let measure = measure_gates_begin!(builder, "PublicKeyOf");
+        let invgenerator = builder.constant_point(Point::generator().inverse());
+        let group_orderm1 = &*GROUP_ORDER - BigUint::one();
+        let group_orderm1target = builder.constant_biguint320(&group_orderm1);
+        let compare_ok = list_le_circuit(
+            builder,
+            sk.limbs.to_vec(),
+            group_orderm1target.limbs.to_vec(),
+            32,
+        );
+        builder.assert_one(compare_ok.target);
+        // public_key = g^-secret key
+        let pk = builder.multiply_point(&sk.bits, &invgenerator);
+        let sk_hash = builder.hash_n_to_hash_no_pad::<PoseidonHash>(sk.limbs.to_vec());
+        let pk_hash = builder.hash_n_to_hash_no_pad::<PoseidonHash>(
+            pk.x.components.into_iter().chain(pk.u.components).collect(),
+        );
+
+        let entry = KeyPairTarget { pk_hash, sk_hash };
+
+        table.push(builder, OperationAuxTableTag::PublicKeyOf as u32, &entry);
+        measure_gates_end!(builder, measure);
+    }
+
+    // CustomPredVerify: verify custom predicate statements verification against operations
+    for entry in custom_predicate_verifications {
+        let measure = measure_gates_begin!(builder, "CustomPredVerify");
+        // Verify the custom predicate operation
+        let (statement, op_type) = make_custom_statement_circuit(
+            params,
+            builder,
+            &entry.custom_predicate,
+            &entry.op_args,
+            &entry.args,
+        )?;
+
+        // Check that the batch id is correct by querying the custom predicate batches table
+        let table_query_hash = builder.vec_ref(
+            params,
+            custom_predicate_table,
+            &entry.custom_predicate_table_index,
+        );
+        let out_query_hash = entry.custom_predicate.hash(builder);
+        builder.connect_array(table_query_hash.elements, out_query_hash.elements);
+
+        let query = CustomPredicateVerifyQueryTarget {
+            statement,                      // output
+            op_type,                        // output
+            op_args: entry.op_args.clone(), // input
+        };
+        table.push(
+            builder,
+            OperationAuxTableTag::CustomPredVerify as u32,
+            &query,
+        );
+        measure_gates_end!(builder, measure);
+    }
+
+    measure_gates_end!(builder, measure);
+    Ok(table)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn verify_operation_circuit(
     params: &Params,
@@ -192,9 +331,7 @@ fn verify_operation_circuit(
     op: &OperationTarget,
     prev_statements: &[StatementTarget],
     input_statements_offset: usize,
-    merkle_claims: &[MerkleClaimTarget],
-    secret_key: &BigUInt320Target,
-    custom_predicate_verification_table: &[HashOutTarget],
+    aux_table: &MuxTableTarget,
 ) -> Result<()> {
     let measure = measure_gates_begin!(builder, "OpVerify");
     let _true = builder._true();
@@ -206,81 +343,54 @@ fn verify_operation_circuit(
     let measure_resolve_op_args = measure_gates_begin!(builder, "ResolveOpArgs");
     let cache = StatementCache::new(params, builder, op, st, prev_statements);
     measure_gates_end!(builder, measure_resolve_op_args);
-    // TODO: Can we have a single table with merkel claims and verified custom predicates
-    // together (with an identifying prefix) and then we only need one random access instead of
-    // two?
-    // Currently we use one slot of aux for the index to merkle claim and another slot of aux
-    // for the index to the verified custom predicate.  We can't use the same slot because then
-    // if one table is different size the random access to the smaller one may use an index
-    // that is too big and not pass the constraints.  Possible solutions to use a single slot
-    // are:
-    //  - a. Use a single table (mux both tables)
-    //  - b. select the index or 0 by checking the operation type here; but that breaks the
-    //    current abstraction a little bit.
 
-    // Certain operations (Contains/NotContains) will refer to one
-    // of the provided Merkle proofs (if any). These proofs have already
-    // been verified, so we need only look up the claim.
-    let measure_resolve_merkle_claim = measure_gates_begin!(builder, "ResolveMerkleClaim");
-    let resolved_merkle_claim =
-        (!merkle_claims.is_empty()).then(|| builder.vec_ref(params, merkle_claims, &op.aux[0]));
-    measure_gates_end!(builder, measure_resolve_merkle_claim);
+    // Certain operations (e.g.: Contains/NotContains) will refer to one of the provided verified
+    // entries in a table (e.g.: Merkle proofs ). These entries have already been verified, so we
+    // need only look up the claim.
 
-    // Operations from custom statements will refer to one
-    // of the provided custom predicates verifications (if any). These operations have already
-    // been verified, so we need only look up the entry.
-    let measure_resolve_custom_pred_verification =
-        measure_gates_begin!(builder, "ResolveCustomPredVerification");
-    let resolved_custom_pred_verification = (!custom_predicate_verification_table.is_empty())
-        .then(|| builder.vec_ref(params, custom_predicate_verification_table, &op.aux[1]));
-    measure_gates_end!(builder, measure_resolve_custom_pred_verification);
+    // The aux table always has a fixed zero entry, so we check if there are more than 1 entries to
+    // trigger the unhashing.
+    let resolved_aux = (aux_table.len() > 1).then(|| aux_table.get(builder, &op.aux_index));
 
-    // The verification may require aux data which needs to be stored in the
-    // `OperationVerifyTarget` so that we can set during witness generation.
-
-    // For now only support native operations
-    // Op checks to carry out. Each 'eval_X' should
-    // be thought of as 'eval' restricted to the op of type X,
-    // where the returned target is `false` if the input targets
+    // Op checks to carry out. Each 'verify_X_circuit' should be thought of as operation check
+    // restricted to the op of type X, where the returned target is `false` if the input targets
     // lie outside of the domain.
-    let op_checks = [
-        vec![
-            verify_none_circuit(params, builder, st, &op.op_type),
-            verify_new_entry_circuit(
-                params,
-                builder,
-                st,
-                &op.op_type,
-                prev_statements,
-                input_statements_offset,
-            ),
-        ],
-        // Skip these if there are no resolved op args
-        if cache.op_args.is_empty() {
-            vec![]
-        } else {
-            vec![
-                verify_copy_circuit(builder, st, &op.op_type, &cache.op_args),
-                verify_eq_neq_from_entries_circuit(params, builder, st, &op.op_type, &cache),
-                verify_lt_lteq_from_entries_circuit(params, builder, st, &op.op_type, &cache),
-                verify_transitive_eq_circuit(params, builder, st, &op.op_type, &cache.op_args),
-                verify_lt_to_neq_circuit(params, builder, st, &op.op_type, &cache.op_args),
-                verify_hash_of_circuit(params, builder, st, &op.op_type, &cache),
-                verify_public_key_of_circuit(params, builder, st, &op.op_type, secret_key, &cache),
-                verify_sum_of_circuit(params, builder, st, &op.op_type, &cache),
-                verify_product_of_circuit(params, builder, st, &op.op_type, &cache),
-                verify_max_of_circuit(params, builder, st, &op.op_type, &cache),
-            ]
-        },
-        // Skip these if there are no resolved Merkle claims
-        if let Some(resolved_merkle_claim) = resolved_merkle_claim {
-            vec![
+    let mut op_checks = Vec::new();
+    op_checks.extend_from_slice(&[
+        verify_none_circuit(params, builder, st, &op.op_type),
+        verify_new_entry_circuit(
+            params,
+            builder,
+            st,
+            &op.op_type,
+            prev_statements,
+            input_statements_offset,
+        ),
+    ]);
+    // Skip these if there are no resolved op args
+    if !cache.op_args.is_empty() {
+        op_checks.extend_from_slice(&[
+            verify_copy_circuit(builder, st, &op.op_type, &cache.op_args),
+            verify_eq_neq_from_entries_circuit(params, builder, st, &op.op_type, &cache),
+            verify_lt_lteq_from_entries_circuit(params, builder, st, &op.op_type, &cache),
+            verify_transitive_eq_circuit(params, builder, st, &op.op_type, &cache.op_args),
+            verify_lt_to_neq_circuit(params, builder, st, &op.op_type, &cache.op_args),
+            verify_hash_of_circuit(params, builder, st, &op.op_type, &cache),
+            verify_sum_of_circuit(params, builder, st, &op.op_type, &cache),
+            verify_product_of_circuit(params, builder, st, &op.op_type, &cache),
+            verify_max_of_circuit(params, builder, st, &op.op_type, &cache),
+        ]);
+    }
+    // Skip these if there are no resolved aux entries
+    if let Some(resolved_aux) = resolved_aux {
+        if params.max_merkle_proofs_containers > 0 {
+            op_checks.extend_from_slice(&[
                 verify_contains_from_entries_circuit(
                     params,
                     builder,
                     st,
                     &op.op_type,
-                    resolved_merkle_claim,
+                    &resolved_aux,
                     &cache,
                 ),
                 verify_not_contains_from_entries_circuit(
@@ -288,27 +398,31 @@ fn verify_operation_circuit(
                     builder,
                     st,
                     &op.op_type,
-                    resolved_merkle_claim,
+                    &resolved_aux,
                     &cache,
                 ),
-            ]
-        } else {
-            vec![]
-        },
-        // Skip these if there are no resolved custom predicate verifications
-        if let Some(resolved_custom_pred_verification) = resolved_custom_pred_verification {
-            vec![verify_custom_circuit(
+            ]);
+        }
+        if params.max_public_key_of > 0 {
+            op_checks.push(verify_public_key_of_circuit(
+                params,
                 builder,
                 st,
                 &op.op_type,
-                resolved_custom_pred_verification,
+                &resolved_aux,
+                &cache,
+            ));
+        }
+        if params.max_custom_predicate_verifications > 0 {
+            op_checks.push(verify_custom_circuit(
+                builder,
+                st,
+                &op.op_type,
+                &resolved_aux,
                 &cache.op_args,
-            )]
-        } else {
-            vec![]
-        },
-    ]
-    .concat();
+            ));
+        }
+    }
 
     let ok = builder.any(op_checks);
     builder.assert_one(ok.target);
@@ -326,10 +440,12 @@ fn verify_contains_from_entries_circuit(
     builder: &mut CircuitBuilder,
     st: &StatementTarget,
     op_type: &OperationTypeTarget,
-    resolved_merkle_claim: MerkleClaimTarget,
+    aux: &TableEntryTarget,
     cache: &StatementCache,
 ) -> BoolTarget {
     let measure = measure_gates_begin!(builder, "OpContainsFromEntries");
+    let (aux_tag_ok, resolved_merkle_claim) =
+        aux.as_type::<MerkleClaimTarget>(builder, OperationAuxTableTag::MerkleProof as u32);
     let op_code_ok = op_type.has_native(builder, NativeOperation::ContainsFromEntries);
 
     let (arg_types_ok, [merkle_root_value, key_value, value_value]) =
@@ -364,7 +480,7 @@ fn verify_contains_from_entries_circuit(
     );
     let st_ok = builder.is_equal_flattenable(st, &expected_statement);
 
-    let ok = builder.all([op_code_ok, arg_types_ok, merkle_proof_ok, st_ok]);
+    let ok = builder.all([op_code_ok, aux_tag_ok, arg_types_ok, merkle_proof_ok, st_ok]);
     measure_gates_end!(builder, measure);
     ok
 }
@@ -374,10 +490,12 @@ fn verify_not_contains_from_entries_circuit(
     builder: &mut CircuitBuilder,
     st: &StatementTarget,
     op_type: &OperationTypeTarget,
-    resolved_merkle_claim: MerkleClaimTarget,
+    aux: &TableEntryTarget,
     cache: &StatementCache,
 ) -> BoolTarget {
     let measure = measure_gates_begin!(builder, "OpNotContainsFromEntries");
+    let (aux_tag_ok, resolved_merkle_claim) =
+        aux.as_type::<MerkleClaimTarget>(builder, OperationAuxTableTag::MerkleProof as u32);
     let op_code_ok = op_type.has_native(builder, NativeOperation::NotContainsFromEntries);
 
     let (arg_types_ok, [merkle_root_value, key_value]) = cache.first_n_args_as_values();
@@ -409,7 +527,7 @@ fn verify_not_contains_from_entries_circuit(
     );
     let st_ok = builder.is_equal_flattenable(st, &expected_statement);
 
-    let ok = builder.all([op_code_ok, arg_types_ok, merkle_proof_ok, st_ok]);
+    let ok = builder.all([op_code_ok, aux_tag_ok, arg_types_ok, merkle_proof_ok, st_ok]);
     measure_gates_end!(builder, measure);
     ok
 }
@@ -418,20 +536,24 @@ fn verify_custom_circuit(
     builder: &mut CircuitBuilder,
     st: &StatementTarget,
     op_type: &OperationTypeTarget,
-    resolved_custom_pred_verification: HashOutTarget,
+    aux: &TableEntryTarget,
     resolved_op_args: &[StatementTarget],
 ) -> BoolTarget {
     let measure = measure_gates_begin!(builder, "OpCustom");
-    let query = CustomPredicateVerifyQueryTarget {
-        statement: st.clone(),
-        op_type: op_type.clone(),
-        op_args: resolved_op_args.to_vec(),
-    };
-    let out_query_hash = query.hash(builder);
-    let ok = builder.is_equal_slice(
-        &resolved_custom_pred_verification.elements,
-        &out_query_hash.elements,
+    let (aux_tag_ok, resolved_query) = aux.as_type::<CustomPredicateVerifyQueryTarget>(
+        builder,
+        OperationAuxTableTag::CustomPredVerify as u32,
     );
+
+    let query_ok = builder.is_equal_flattenable(
+        &resolved_query,
+        &CustomPredicateVerifyQueryTarget {
+            statement: st.clone(),
+            op_type: op_type.clone(),
+            op_args: resolved_op_args.to_vec(),
+        },
+    );
+    let ok = builder.all([aux_tag_ok, query_ok]);
     measure_gates_end!(builder, measure);
     ok
 }
@@ -593,41 +715,27 @@ fn verify_public_key_of_circuit(
     builder: &mut CircuitBuilder,
     st: &StatementTarget,
     op_type: &OperationTypeTarget,
-    secret_key: &BigUInt320Target,
+    aux: &TableEntryTarget,
     cache: &StatementCache,
 ) -> BoolTarget {
     let measure = measure_gates_begin!(builder, "OpPublicKeyOf");
+    let (aux_tag_ok, resolved_key_pair) =
+        aux.as_type::<KeyPairTarget>(builder, OperationAuxTableTag::PublicKeyOf as u32);
 
     let op_code_ok = op_type.has_native(builder, NativeOperation::PublicKeyOf);
     let (arg_types_ok, [arg1_value, arg2_value]) = cache.first_n_args_as_values();
     // inputting public_key, secret_key
-    let public_key_hash = arg1_value.elements;
-    let secret_key_hash = arg2_value.elements;
+    let public_key_hash = arg1_value;
+    let secret_key_hash = arg2_value;
 
-    let secret_key_hash_v =
-        builder.hash_n_to_hash_no_pad::<PoseidonHash>(secret_key.limbs.to_vec());
-    let skey_hash_ok = builder.is_equal_slice(&secret_key_hash, &secret_key_hash_v.elements);
-    let invgenerator = builder.constant_point(Point::generator().inverse());
-    let secret_key_bits = secret_key.bits;
-    let group_orderm1 = &*GROUP_ORDER - BigUint::one();
-    let group_orderm1target = builder.constant_biguint320(&group_orderm1);
-    let compare_ok = list_le_circuit(
-        builder,
-        secret_key.limbs.to_vec(),
-        group_orderm1target.limbs.to_vec(),
-        32,
+    let skey_hash_ok = builder.is_equal_slice(
+        &secret_key_hash.elements,
+        &resolved_key_pair.sk_hash.elements,
     );
-    // public_key = g^-secret key
-    let public_key = builder.multiply_point(&secret_key_bits, &invgenerator);
-    let public_key_hash_v = builder.hash_n_to_hash_no_pad::<PoseidonHash>(
-        public_key
-            .x
-            .components
-            .into_iter()
-            .chain(public_key.u.components)
-            .collect(),
+    let pkey_hash_ok = builder.is_equal_slice(
+        &public_key_hash.elements,
+        &resolved_key_pair.pk_hash.elements,
     );
-    let pkey_hash_ok = builder.is_equal_slice(&public_key_hash, &public_key_hash_v.elements);
 
     let arg1_expected = cache.equations[0].lhs.clone();
     let arg2_expected = cache.equations[1].lhs.clone();
@@ -641,10 +749,10 @@ fn verify_public_key_of_circuit(
 
     let ok = builder.all([
         op_code_ok,
+        aux_tag_ok,
         arg_types_ok,
         pkey_hash_ok,
         skey_hash_ok,
-        compare_ok,
         st_ok,
     ]);
     measure_gates_end!(builder, measure);
@@ -1078,53 +1186,6 @@ fn normalize_statement_circuit(
     }
 }
 
-/// Precompute the hash state by absorbing all full chunks from `inputs` and return the reminder
-/// elements that didn't fit into a chunk.
-fn precompute_hash_state<F: RichField, P: PlonkyPermutation<F>>(inputs: &[F]) -> (P, &[F]) {
-    let (inputs, inputs_rem) = inputs.split_at((inputs.len() / P::RATE) * P::RATE);
-    let mut perm = P::new(core::iter::repeat(F::ZERO));
-
-    // Absorb all inputs up to the biggest multiple of RATE.
-    for input_chunk in inputs.chunks(P::RATE) {
-        perm.set_from_slice(input_chunk, 0);
-        perm.permute();
-    }
-
-    (perm, inputs_rem)
-}
-
-/// Hash `inputs` starting from a circuit-constant `perm` state.
-fn hash_from_state_circuit<H: AlgebraicHasher<F>, P: PlonkyPermutation<F>>(
-    builder: &mut CircuitBuilder,
-    perm: P,
-    inputs: &[Target],
-) -> HashOutTarget {
-    let mut state =
-        H::AlgebraicPermutation::new(perm.as_ref().iter().map(|v| builder.constant(*v)));
-
-    // Absorb all input chunks.
-    for input_chunk in inputs.chunks(H::AlgebraicPermutation::RATE) {
-        // Overwrite the first r elements with the inputs. This differs from a standard sponge,
-        // where we would xor or add in the inputs. This is a well-known variant, though,
-        // sometimes called "overwrite mode".
-        state.set_from_slice(input_chunk, 0);
-        state = builder.permute::<H>(state);
-    }
-
-    let num_outputs = NUM_HASH_OUT_ELTS;
-    // Squeeze until we have the desired number of outputs.
-    let mut outputs = Vec::with_capacity(num_outputs);
-    loop {
-        for &s in state.squeeze() {
-            outputs.push(s);
-            if outputs.len() == num_outputs {
-                return HashOutTarget::from_vec(outputs);
-            }
-        }
-        state = builder.permute::<H>(state);
-    }
-}
-
 /// `params.num_public_statements_id` is the total number of statements that will be hashed.
 /// The id is calculated with front-padded none-statements and then the input statements
 /// reversed.  The part of the hash from the front-padded none-statements is precomputed.
@@ -1214,50 +1275,6 @@ fn build_custom_predicate_table_circuit(
     }
     measure_gates_end!(builder, measure);
     Ok(custom_predicate_table)
-}
-
-/// Build table of [batch_id, custom_predicate_index, custom_predicate, args, st, op, op_args]
-/// with queryable part as hash([st, op, op_args]).  While building the table we verify each
-/// custom predicate against the operation and statement.  Return the hash of each table "query"
-/// sub-entry.
-fn build_custom_predicate_verification_table_circuit(
-    params: &Params,
-    builder: &mut CircuitBuilder,
-    custom_predicate_table: &[HashOutTarget],
-    custom_predicate_verifications: &[CustomPredicateVerifyEntryTarget],
-) -> Result<Vec<HashOutTarget>> {
-    let measure = measure_gates_begin!(builder, "BuildCustomPredVerifyTbl");
-    let mut custom_predicate_verification_table =
-        Vec::with_capacity(params.max_custom_predicate_verifications);
-    for entry in custom_predicate_verifications {
-        // Verify the custom predicate operation
-        let (statement, op_type) = make_custom_statement_circuit(
-            params,
-            builder,
-            &entry.custom_predicate,
-            &entry.op_args,
-            &entry.args,
-        )?;
-
-        // Check that the batch id is correct by querying the custom predicate batches table
-        let table_query_hash = builder.vec_ref(
-            params,
-            custom_predicate_table,
-            &entry.custom_predicate_table_index,
-        );
-        let out_query_hash = entry.custom_predicate.hash(builder);
-        builder.connect_array(table_query_hash.elements, out_query_hash.elements);
-
-        let query = CustomPredicateVerifyQueryTarget {
-            statement,                      // output
-            op_type,                        // output
-            op_args: entry.op_args.clone(), // input
-        };
-        let in_query_hash = query.hash(builder);
-        custom_predicate_verification_table.push(in_query_hash);
-    }
-    measure_gates_end!(builder, measure);
-    Ok(custom_predicate_verification_table)
 }
 
 fn verify_main_pod_circuit(
@@ -1354,26 +1371,17 @@ fn verify_main_pod_circuit(
     let public_statements_offset = main_pod.input_statements.len() - params.max_public_statements;
     let pub_statements = &main_pod.input_statements[public_statements_offset..];
 
-    // Verify Merkle claim/proof targets
-    let merkle_claims = main_pod
-        .merkle_proofs
-        .iter()
-        .map(|mt_proof| {
-            verify_merkle_proof_circuit(builder, mt_proof);
-            MerkleClaimTarget::from(mt_proof.clone())
-        })
-        .collect_vec();
-
     // Table of custom predicate batches with batch_id calculation
     let custom_predicate_table =
         build_custom_predicate_table_circuit(params, builder, &main_pod.custom_predicate_batches)?;
 
-    // Table of custom predicate statements verification against operations
-    let custom_predicate_verification_table = build_custom_predicate_verification_table_circuit(
+    let aux_table = build_operation_aux_table_circuit(
         params,
         builder,
-        &custom_predicate_table,
+        &main_pod.merkle_proofs,
+        &main_pod.public_key_of_sks,
         &main_pod.custom_predicate_verifications,
+        &custom_predicate_table,
     )?;
 
     // 2. Calculate the Pod Id from the public statements
@@ -1408,9 +1416,7 @@ fn verify_main_pod_circuit(
                 op,
                 prev_statements,
                 input_statements_offset,
-                &merkle_claims,
-                &main_pod.secret_keys[i],
-                &custom_predicate_verification_table,
+                &aux_table,
             )?;
         } else {
             verify_operation_public_statement_circuit(
@@ -1439,7 +1445,7 @@ pub struct MainPodVerifyTarget {
     input_statements: Vec<StatementTarget>,
     operations: Vec<OperationTarget>,
     merkle_proofs: Vec<MerkleClaimAndProofTarget>,
-    secret_keys: Vec<BigUInt320Target>,
+    public_key_of_sks: Vec<BigUInt320Target>,
     custom_predicate_batches: Vec<CustomPredicateBatchTarget>,
     custom_predicate_verifications: Vec<CustomPredicateVerifyEntryTarget>,
 }
@@ -1473,7 +1479,7 @@ impl MainPodVerifyTarget {
                     MerkleClaimAndProofTarget::new_virtual(params.max_depth_mt_containers, builder)
                 })
                 .collect(),
-            secret_keys: (0..params.max_statements)
+            public_key_of_sks: (0..params.max_public_key_of)
                 .map(|_| builder.add_virtual_biguint320_target())
                 .collect(),
             custom_predicate_batches: (0..params.max_custom_predicate_batches)
@@ -1504,6 +1510,7 @@ pub struct MainPodVerifyInput {
     pub statements: Vec<mainpod::Statement>,
     pub operations: Vec<mainpod::Operation>,
     pub merkle_proofs: Vec<MerkleClaimAndProof>,
+    pub public_key_of_sks: Vec<SecretKey>,
     pub custom_predicate_batches: Vec<Arc<CustomPredicateBatch>>,
     pub custom_predicate_verifications: Vec<CustomPredicateVerification>,
 }
@@ -1612,41 +1619,6 @@ impl InnerCircuit for MainPodVerifyTarget {
         for (i, (st, op)) in zip_eq(&input.statements, &input.operations).enumerate() {
             self.input_statements[i].set_targets(pw, &self.params, st)?;
             self.operations[i].set_targets(pw, &self.params, op)?;
-            if matches!(
-                op.op_type(),
-                OperationType::Native(NativeOperation::PublicKeyOf)
-            ) {
-                if let StatementArg::Literal(value) = &st.1[1] {
-                    if let TypedValue::SecretKey(sk) = value.typed() {
-                        pw.set_biguint320_target(&self.secret_keys[i], &sk.0)?;
-                    } else {
-                        panic!("SecretKey literal of incorrect type!")
-                    }
-                } else if let OperationArg::Index(ind) = op.1[1] {
-                    // TODO: This adjustment only works if the secret key came
-                    // from a statement in the current POD, which is the most
-                    // common case.  A more general solution needs to be able
-                    // index across the virtual array of statements from all
-                    // input PODs, similar to what's done in
-                    // plonky2::mainpod::layout_statements.
-                    let adjusted_index = ind
-                        - (1 + self.params.max_input_signed_pods
-                            * self.params.max_signed_pod_values
-                            + self.params.max_input_recursive_pods
-                                * self.params.max_public_statements);
-                    if let StatementArg::Literal(value) = &input.statements[adjusted_index].1[1] {
-                        if let TypedValue::SecretKey(sk) = value.typed() {
-                            pw.set_biguint320_target(&self.secret_keys[i], &sk.0)?;
-                        } else {
-                            panic!("SecretKey literal of incorrect type!")
-                        }
-                    }
-                } else {
-                    panic!("SecretKey arg not found!")
-                }
-            } else {
-                pw.set_biguint320_target(&self.secret_keys[i], &BigUint::ZERO)?;
-            }
         }
 
         assert!(input.merkle_proofs.len() <= self.params.max_merkle_proofs_containers);
@@ -1657,6 +1629,16 @@ impl InnerCircuit for MainPodVerifyTarget {
         let pad_mp = MerkleClaimAndProof::empty();
         for i in input.merkle_proofs.len()..self.params.max_merkle_proofs_containers {
             self.merkle_proofs[i].set_targets(pw, false, &pad_mp)?;
+        }
+
+        assert!(input.public_key_of_sks.len() <= self.params.max_public_key_of);
+        for (i, sk) in input.public_key_of_sks.iter().enumerate() {
+            pw.set_biguint320_target(&self.public_key_of_sks[i], &sk.0)?;
+        }
+        // Padding
+        let pad_sk = BigUint::ZERO;
+        for i in input.public_key_of_sks.len()..self.params.max_public_key_of {
+            pw.set_biguint320_target(&self.public_key_of_sks[i], &pad_sk)?;
         }
 
         assert!(input.custom_predicate_batches.len() <= self.params.max_custom_predicate_batches);
@@ -1727,7 +1709,7 @@ mod tests {
         frontend::{self, literal, CustomPredicateBatchBuilder, StatementTmplBuilder},
         middleware::{
             hash_str, hash_values, Hash, Key, OperationType, PodId, Predicate, RawValue,
-            StatementTmpl, StatementTmplArg, Wildcard,
+            StatementTmpl, StatementTmplArg, TypedValue, Wildcard,
         },
     };
 
@@ -1736,11 +1718,13 @@ mod tests {
         op: mainpod::Operation,
         prev_statements: Vec<mainpod::Statement>,
         merkle_proofs: Vec<MerkleClaimAndProof>,
-        secret_key: &SecretKey,
+        secret_keys: Vec<SecretKey>,
     ) -> Result<()> {
         let params = Params {
             max_custom_predicate_batches: 0,
             max_custom_predicate_verifications: 0,
+            max_merkle_proofs_containers: merkle_proofs.len(),
+            max_public_key_of: secret_keys.len(),
             ..Default::default()
         };
 
@@ -1752,24 +1736,29 @@ mod tests {
         let prev_statements_target: Vec<_> = (0..prev_statements.len())
             .map(|_| builder.add_virtual_statement(&params))
             .collect();
+
         let merkle_proofs_target: Vec<_> = merkle_proofs
             .iter()
             .map(|_| {
-                let mt_proof = MerkleClaimAndProofTarget::new_virtual(
-                    params.max_depth_mt_containers,
-                    &mut builder,
-                );
-                verify_merkle_proof_circuit(&mut builder, &mt_proof);
-                mt_proof
+                MerkleClaimAndProofTarget::new_virtual(params.max_depth_mt_containers, &mut builder)
             })
             .collect();
-        let merkle_claims_target: Vec<_> = merkle_proofs_target
-            .clone()
-            .into_iter()
-            .map(|pf| pf.into())
+
+        let secret_keys_target: Vec<_> = secret_keys
+            .iter()
+            .map(|sk| builder.constant_biguint320(&sk.0))
             .collect();
-        let secret_key_target = builder.constant_biguint320(&secret_key.0);
-        let custom_predicate_verification_table = vec![];
+
+        let aux_table = build_operation_aux_table_circuit(
+            &params,
+            &mut builder,
+            &merkle_proofs_target,
+            &secret_keys_target,
+            &[],
+            &[],
+        )?;
+        // let max_aux_entry_len = max_operation_aux_entry_len(&params);
+        // let aux = builder.add_virtual_targets(1 + max_aux_entry_len);
 
         verify_operation_circuit(
             &params,
@@ -1778,9 +1767,7 @@ mod tests {
             &op_target,
             &prev_statements_target,
             0,
-            &merkle_claims_target,
-            &secret_key_target,
-            &custom_predicate_verification_table,
+            &aux_table,
         )?;
 
         let mut pw = PartialWitness::<F>::new();
@@ -1940,13 +1927,7 @@ mod tests {
         .into_iter()
         .for_each(|(op, st)| {
             let check = std::panic::catch_unwind(|| {
-                operation_verify(
-                    st,
-                    op,
-                    prev_statements.to_vec(),
-                    vec![],
-                    &SecretKey(BigUint::ZERO),
-                )
+                operation_verify(st, op, prev_statements.to_vec(), vec![], vec![])
             });
             match check {
                 Err(e) => {
@@ -2011,14 +1992,7 @@ mod tests {
         ]
         .into_iter()
         .for_each(|(op, st)| {
-            assert!(operation_verify(
-                st,
-                op,
-                prev_statements.to_vec(),
-                vec![],
-                &SecretKey(BigUint::ZERO)
-            )
-            .is_err())
+            assert!(operation_verify(st, op, prev_statements.to_vec(), vec![], vec![]).is_err())
         });
     }
 
@@ -2031,7 +2005,7 @@ mod tests {
             OperationAux::None,
         );
         let prev_statements = vec![Statement::None.into()];
-        operation_verify(st, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))
+        operation_verify(st, op, prev_statements, vec![], vec![])
     }
 
     #[test]
@@ -2049,7 +2023,7 @@ mod tests {
             vec![],
             OperationAux::None,
         );
-        operation_verify(st1, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))
+        operation_verify(st1, op, prev_statements, vec![], vec![])
     }
 
     #[test]
@@ -2061,7 +2035,7 @@ mod tests {
             OperationAux::None,
         );
         let prev_statements = vec![Statement::None.into()];
-        operation_verify(st, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))
+        operation_verify(st, op, prev_statements, vec![], vec![])
     }
 
     #[test]
@@ -2084,7 +2058,7 @@ mod tests {
             OperationAux::None,
         );
         let prev_statements = vec![st1, st2];
-        operation_verify(st, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))
+        operation_verify(st, op, prev_statements, vec![], vec![])
     }
 
     #[test]
@@ -2107,7 +2081,7 @@ mod tests {
             OperationAux::None,
         );
         let prev_statements = vec![st1, st2];
-        operation_verify(st, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))
+        operation_verify(st, op, prev_statements, vec![], vec![])
     }
 
     #[test]
@@ -2130,7 +2104,7 @@ mod tests {
             OperationAux::None,
         );
         let prev_statements = vec![st1, st2.clone()];
-        operation_verify(st, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))?;
+        operation_verify(st, op, prev_statements, vec![], vec![])?;
 
         // Also check negative < negative
         let st3: mainpod::Statement = Statement::equal(
@@ -2154,7 +2128,7 @@ mod tests {
             OperationAux::None,
         );
         let prev_statements = vec![st3.clone(), st4];
-        operation_verify(st, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))?;
+        operation_verify(st, op, prev_statements, vec![], vec![])?;
 
         // Also check negative < positive
         let st: mainpod::Statement = Statement::lt(
@@ -2168,7 +2142,7 @@ mod tests {
             OperationAux::None,
         );
         let prev_statements = vec![st3, st2];
-        operation_verify(st, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))
+        operation_verify(st, op, prev_statements, vec![], vec![])
     }
 
     #[test]
@@ -2191,7 +2165,7 @@ mod tests {
             OperationAux::None,
         );
         let prev_statements = vec![st1, st2.clone()];
-        operation_verify(st, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))?;
+        operation_verify(st, op, prev_statements, vec![], vec![])?;
 
         // Also check negative <= negative
         let st3: mainpod::Statement = Statement::equal(
@@ -2215,7 +2189,7 @@ mod tests {
             OperationAux::None,
         );
         let prev_statements = vec![st3.clone(), st4];
-        operation_verify(st, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))?;
+        operation_verify(st, op, prev_statements, vec![], vec![])?;
 
         // Also check negative <= positive
         let st: mainpod::Statement = Statement::lt_eq(
@@ -2229,13 +2203,7 @@ mod tests {
             OperationAux::None,
         );
         let prev_statements = vec![st3, st2];
-        operation_verify(
-            st,
-            op,
-            prev_statements.clone(),
-            vec![],
-            &SecretKey(BigUint::ZERO),
-        )?;
+        operation_verify(st, op, prev_statements.clone(), vec![], vec![])?;
 
         // Also check equality, both positive and negative.
         let st: mainpod::Statement = Statement::lt_eq(
@@ -2248,13 +2216,7 @@ mod tests {
             vec![OperationArg::Index(0), OperationArg::Index(0)],
             OperationAux::None,
         );
-        operation_verify(
-            st,
-            op,
-            prev_statements.clone(),
-            vec![],
-            &SecretKey(BigUint::ZERO),
-        )?;
+        operation_verify(st, op, prev_statements.clone(), vec![], vec![])?;
         let st: mainpod::Statement = Statement::lt_eq(
             AnchoredKey::from((PodId(RawValue::from(88).into()), "hello")),
             AnchoredKey::from((PodId(RawValue::from(88).into()), "hello")),
@@ -2265,7 +2227,7 @@ mod tests {
             vec![OperationArg::Index(1), OperationArg::Index(1)],
             OperationAux::None,
         );
-        operation_verify(st, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))
+        operation_verify(st, op, prev_statements, vec![], vec![])
     }
 
     #[test]
@@ -2314,7 +2276,7 @@ mod tests {
             OperationAux::None,
         );
         let prev_statements = vec![st1, st2, st3];
-        operation_verify(st, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))
+        operation_verify(st, op, prev_statements, vec![], vec![])
     }
 
     #[test]
@@ -2360,7 +2322,7 @@ mod tests {
                     OperationAux::None,
                 );
                 let prev_statements = vec![st1, st2, st3];
-                operation_verify(st, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))
+                operation_verify(st, op, prev_statements, vec![], vec![])
             })
     }
 
@@ -2407,7 +2369,7 @@ mod tests {
                     OperationAux::None,
                 );
                 let prev_statements = vec![st1, st2, st3];
-                operation_verify(st, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))
+                operation_verify(st, op, prev_statements, vec![], vec![])
             })
     }
 
@@ -2449,7 +2411,7 @@ mod tests {
                 OperationAux::None,
             );
             let prev_statements = vec![st1, st2, st3];
-            operation_verify(st, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))
+            operation_verify(st, op, prev_statements, vec![], vec![])
         })
     }
 
@@ -2494,13 +2456,7 @@ mod tests {
                 let prev_statements = [st1, st2, st3];
 
                 let check = std::panic::catch_unwind(|| {
-                    operation_verify(
-                        st,
-                        op,
-                        prev_statements.to_vec(),
-                        vec![],
-                        &SecretKey(BigUint::ZERO),
-                    )
+                    operation_verify(st, op, prev_statements.to_vec(), vec![], vec![])
                 });
                 match check {
                     Err(e) => {
@@ -2533,7 +2489,7 @@ mod tests {
             OperationAux::None,
         );
         let prev_statements = vec![st1];
-        operation_verify(st, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))
+        operation_verify(st, op, prev_statements, vec![], vec![])
     }
 
     #[test]
@@ -2559,7 +2515,7 @@ mod tests {
             OperationAux::None,
         );
         let prev_statements = vec![st1, st2];
-        operation_verify(st, op, prev_statements, vec![], &SecretKey(BigUint::ZERO))
+        operation_verify(st, op, prev_statements, vec![], vec![])
     }
 
     #[test]
@@ -2599,13 +2555,7 @@ mod tests {
             no_key_pf,
         )];
         let prev_statements = vec![root_st, key_st];
-        operation_verify(
-            st,
-            op,
-            prev_statements,
-            merkle_proofs,
-            &SecretKey(BigUint::ZERO),
-        )
+        operation_verify(st, op, prev_statements, merkle_proofs, vec![])
     }
 
     #[test]
@@ -2652,21 +2602,15 @@ mod tests {
             key_pf,
         )];
         let prev_statements = vec![root_st, key_st, value_st];
-        operation_verify(
-            st,
-            op,
-            prev_statements,
-            merkle_proofs,
-            &SecretKey(BigUint::ZERO),
-        )
+        operation_verify(st, op, prev_statements, merkle_proofs, vec![])
     }
 
     #[test]
-    fn test_operation_verify_publickeyof() -> Result<()> {
+    fn test_operation_verify_publickeyof_ok() -> Result<()> {
         [
-            &SecretKey(BigUint::one()),
-            &SecretKey::new_rand(),
-            &SecretKey(&*GROUP_ORDER - BigUint::one()),
+            SecretKey(BigUint::one()),
+            SecretKey::new_rand(),
+            SecretKey(&*GROUP_ORDER - BigUint::one()),
         ]
         .into_iter()
         .try_for_each(|secret_key| {
@@ -2684,10 +2628,10 @@ mod tests {
             let op = mainpod::Operation(
                 OperationType::Native(NativeOperation::PublicKeyOf),
                 vec![OperationArg::Index(0), OperationArg::Index(1)],
-                OperationAux::None,
+                OperationAux::PublicKeyOfIndex(0),
             );
             let prev_statements = vec![public_key_st, secret_key_st];
-            operation_verify(st, op, prev_statements, vec![], secret_key)
+            operation_verify(st, op, prev_statements, vec![], vec![secret_key])
         })
     }
 
@@ -2707,10 +2651,10 @@ mod tests {
         let op = mainpod::Operation(
             OperationType::Native(NativeOperation::PublicKeyOf),
             vec![OperationArg::Index(0), OperationArg::Index(1)],
-            OperationAux::None,
+            OperationAux::PublicKeyOfIndex(0),
         );
         let prev_statements = vec![public_key_st, secret_key_st];
-        assert!(operation_verify(st, op, prev_statements, vec![], &secret_key).is_err())
+        assert!(operation_verify(st, op, prev_statements, vec![], vec![secret_key]).is_err())
     }
 
     #[test]
@@ -2732,7 +2676,7 @@ mod tests {
             OperationAux::None,
         );
         let prev_statements = vec![public_key_st, secret_key_st];
-        assert!(operation_verify(st, op, prev_statements, vec![], &secret_key).is_err())
+        assert!(operation_verify(st, op, prev_statements, vec![], vec![secret_key]).is_err())
     }
 
     #[test]
@@ -2751,7 +2695,7 @@ mod tests {
         let op = mainpod::Operation(
             OperationType::Native(NativeOperation::PublicKeyOf),
             vec![OperationArg::Index(0), OperationArg::Index(1)],
-            OperationAux::None,
+            OperationAux::PublicKeyOfIndex(0),
         );
         let prev_statements = vec![public_key_st, secret_key_st];
         assert!(operation_verify(
@@ -2759,7 +2703,7 @@ mod tests {
             op,
             prev_statements,
             vec![],
-            &SecretKey(BigUint::from(123u32))
+            vec![SecretKey(BigUint::from(123u32))]
         )
         .is_err())
     }
@@ -2780,10 +2724,10 @@ mod tests {
         let op = mainpod::Operation(
             OperationType::Native(NativeOperation::PublicKeyOf),
             vec![OperationArg::Index(0), OperationArg::Index(1)],
-            OperationAux::None,
+            OperationAux::PublicKeyOfIndex(0),
         );
         let prev_statements = vec![public_key_st, secret_key_st];
-        assert!(operation_verify(st, op, prev_statements, vec![], &secret_key).is_err())
+        assert!(operation_verify(st, op, prev_statements, vec![], vec![secret_key]).is_err())
     }
 
     fn helper_statement_arg_from_template(
