@@ -381,7 +381,16 @@ fn validate_and_build_statement_template(
                 | NativePredicate::SumOf
                 | NativePredicate::ProductOf
                 | NativePredicate::MaxOf
-                | NativePredicate::HashOf => 3,
+                | NativePredicate::HashOf
+                | NativePredicate::ContainerDelete
+                | NativePredicate::DictDelete
+                | NativePredicate::SetInsert
+                | NativePredicate::SetDelete => 3,
+                NativePredicate::ContainerInsert
+                | NativePredicate::ContainerUpdate
+                | NativePredicate::DictInsert
+                | NativePredicate::DictUpdate
+                | NativePredicate::ArrayUpdate => 4,
                 NativePredicate::None | NativePredicate::False => 0,
             };
 
