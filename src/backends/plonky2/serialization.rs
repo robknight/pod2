@@ -137,7 +137,8 @@ impl WitnessGeneratorSerializer<F, D> for Pod2GeneratorSerializer {
 
 /// Helper type to serialize and deserialize the pod2 `CircuitData` using serde traits.
 #[derive(Clone)]
-pub struct CircuitDataSerializer(pub(crate) CircuitData);
+#[repr(transparent)]
+pub struct CircuitDataSerializer(pub CircuitData);
 
 impl Deref for CircuitDataSerializer {
     type Target = CircuitData;
@@ -178,6 +179,7 @@ impl<'de> Deserialize<'de> for CircuitDataSerializer {
 
 /// Helper type to serialize and deserialize the pod2 `CommonCircuitData` using serde traits.
 #[derive(Clone)]
+#[repr(transparent)]
 pub struct CommonCircuitDataSerializer(pub CommonCircuitData);
 
 impl Deref for CommonCircuitDataSerializer {
@@ -217,7 +219,8 @@ impl<'de> Deserialize<'de> for CommonCircuitDataSerializer {
 
 /// Helper type to serialize and deserialize the pod2 `VerifierCircuitData` using serde traits.
 #[derive(Clone)]
-pub struct VerifierCircuitDataSerializer(pub(crate) VerifierCircuitData);
+#[repr(transparent)]
+pub struct VerifierCircuitDataSerializer(pub VerifierCircuitData);
 
 impl Deref for VerifierCircuitDataSerializer {
     type Target = VerifierCircuitData;
@@ -257,7 +260,8 @@ impl<'de> Deserialize<'de> for VerifierCircuitDataSerializer {
 
 /// Helper type to serialize and deserialize the pod2 `VerifierOnlyCircuitData` using serde traits.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VerifierOnlyCircuitDataSerializer(pub(crate) VerifierOnlyCircuitData);
+#[repr(transparent)]
+pub struct VerifierOnlyCircuitDataSerializer(pub VerifierOnlyCircuitData);
 
 impl Deref for VerifierOnlyCircuitDataSerializer {
     type Target = VerifierOnlyCircuitData;
