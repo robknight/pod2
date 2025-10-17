@@ -34,6 +34,7 @@ mod tests {
         middleware::{
             CustomPredicate, CustomPredicateBatch, CustomPredicateRef, Key, NativePredicate,
             Params, Predicate, RawValue, StatementTmpl, StatementTmplArg, Value, Wildcard,
+            EMPTY_HASH,
         },
     };
 
@@ -687,7 +688,7 @@ mod tests {
         let batch_id_str = available_batch.id().encode_hex::<String>();
         let input = format!(
             r#"
-            use imported_pred from 0x{}
+            use batch imported_pred from 0x{}
 
             REQUEST(
                 imported_pred(Pod1, Pod2)
@@ -738,7 +739,7 @@ mod tests {
 
         let input = format!(
             r#"
-            use pred_one, _, pred_three from 0x{}
+            use batch pred_one, _, pred_three from 0x{}
 
             REQUEST(
                 pred_one(Pod1)
@@ -796,7 +797,7 @@ mod tests {
 
         let input = format!(
             r#"
-            use imported_eq from 0x{}
+            use batch imported_eq from 0x{}
 
             wrapper_pred(X, Y) = AND(
                 imported_eq(X, Y)
@@ -832,6 +833,38 @@ mod tests {
         };
 
         assert_eq!(defined_pred.statements[0], expected_statement);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_e2e_intro_import_parsing() -> Result<(), LangError> {
+        let params = Params::default();
+
+        let intro_hash = EMPTY_HASH.encode_hex::<String>();
+        let input = format!(
+            r#"
+            use intro empty() from 0x{intro_hash}
+
+            REQUEST(
+                empty()
+            )
+        "#,
+        );
+
+        let processed = parse(&input, &params, &[])?;
+        let request_templates = processed.request.templates();
+        assert_eq!(request_templates.len(), 1);
+
+        if let Predicate::Intro(intro_ref) = &request_templates[0].pred {
+            assert_eq!(intro_ref.name, "empty");
+            assert_eq!(intro_ref.args_len, 0);
+            assert_eq!(intro_ref.verifier_data_hash, EMPTY_HASH);
+        } else {
+            panic!("Expected Intro predicate");
+        }
+
+        assert!(request_templates[0].args.is_empty());
 
         Ok(())
     }
@@ -920,7 +953,7 @@ mod tests {
 
         let input = format!(
             r#"
-            use some_pred from {}
+            use batch some_pred from {}
             "#,
             unknown_batch_id
         );
