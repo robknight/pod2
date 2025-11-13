@@ -1,17 +1,27 @@
 pub mod error;
+pub mod frontend_ast;
+pub mod frontend_ast_lower;
+pub mod frontend_ast_split;
+pub mod frontend_ast_validate;
 pub mod parser;
 pub mod pretty_print;
-pub mod processor;
 
 use std::sync::Arc;
 
 pub use error::LangError;
 pub use parser::{parse_podlang, Pairs, ParseError, Rule};
 pub use pretty_print::PrettyPrint;
-pub use processor::process_pest_tree;
-use processor::PodlangOutput;
 
-use crate::middleware::{CustomPredicateBatch, Params};
+use crate::{
+    frontend::PodRequest,
+    middleware::{CustomPredicateBatch, Params},
+};
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PodlangOutput {
+    pub custom_batch: Arc<CustomPredicateBatch>,
+    pub request: PodRequest,
+}
 
 pub fn parse(
     input: &str,
@@ -19,7 +29,28 @@ pub fn parse(
     available_batches: &[Arc<CustomPredicateBatch>],
 ) -> Result<PodlangOutput, LangError> {
     let pairs = parse_podlang(input)?;
-    processor::process_pest_tree(pairs, params, available_batches).map_err(LangError::from)
+    let document_pair = pairs
+        .into_iter()
+        .next()
+        .expect("parse_podlang should always return at least one pair for a valid document");
+    let document = frontend_ast::parse::parse_document(document_pair)?;
+    let validated = frontend_ast_validate::validate(document, available_batches)?;
+    let lowered = frontend_ast_lower::lower(validated, params, "PodlangBatch".to_string())?;
+
+    let custom_batch = lowered.batch.unwrap_or_else(|| {
+        // If no batch, create an empty one
+        CustomPredicateBatch::new(params, "PodlangBatch".to_string(), vec![])
+    });
+
+    let request = lowered.request.unwrap_or_else(|| {
+        // If no request, create an empty one
+        PodRequest::new(vec![])
+    });
+
+    Ok(PodlangOutput {
+        custom_batch,
+        request,
+    })
 }
 
 #[cfg(test)]
@@ -30,7 +61,6 @@ mod tests {
     use super::*;
     use crate::{
         backends::plonky2::primitives::ec::schnorr::SecretKey,
-        lang::error::ProcessorError,
         middleware::{
             CustomPredicate, CustomPredicateBatch, CustomPredicateRef, Key, NativePredicate,
             Params, Predicate, RawValue, StatementTmpl, StatementTmplArg, Value, Wildcard,
@@ -963,13 +993,13 @@ mod tests {
         assert!(result.is_err());
 
         match result.err().unwrap() {
-            LangError::Processor(e) => match *e {
-                ProcessorError::BatchNotFound { id, .. } => {
+            LangError::Validation(e) => match *e {
+                frontend_ast_validate::ValidationError::BatchNotFound { id, .. } => {
                     assert_eq!(id, unknown_batch_id);
                 }
                 _ => panic!("Expected BatchNotFound error, but got {:?}", e),
             },
-            e => panic!("Expected LangError::Processor, but got {:?}", e),
+            e => panic!("Expected LangError::Validation, but got {:?}", e),
         }
     }
 
@@ -991,16 +1021,18 @@ mod tests {
         assert!(result.is_err());
 
         match result.err().unwrap() {
-            LangError::Processor(e) => match *e {
-                ProcessorError::UndefinedWildcard {
-                    name, pred_name, ..
+            LangError::Validation(e) => match *e {
+                frontend_ast_validate::ValidationError::UndefinedWildcard {
+                    name,
+                    pred_name,
+                    ..
                 } => {
                     assert_eq!(name, "user_public_key");
                     assert_eq!(pred_name, "identity_verified");
                 }
                 _ => panic!("Expected UndefinedWildcard error, but got {:?}", e),
             },
-            e => panic!("Expected LangError::Processor, but got {:?}", e),
+            e => panic!("Expected LangError::Validation, but got {:?}", e),
         }
     }
 }
