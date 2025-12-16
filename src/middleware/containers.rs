@@ -22,34 +22,30 @@ pub struct Dictionary {
     #[serde(skip)]
     #[schemars(skip)]
     mt: MerkleTree,
-    max_depth: usize,
     #[serde(serialize_with = "ordered_map")]
     kvs: HashMap<Key, Value>,
 }
 
 #[macro_export]
 macro_rules! dict {
-    ($max_depth:expr, { $($key:expr => $val:expr),* , }) => (
-        $crate::dict!($max_depth, { $($key => $val),* })
+    ({ $($key:expr => $val:expr),* , }) => (
+        $crate::dict!({ $($key => $val),* })
     );
-    ($max_depth:expr, { $($key:expr => $val:expr),* }) => ({
+    ({ $($key:expr => $val:expr),* }) => ({
         let mut map = ::std::collections::HashMap::new();
         $( map.insert($crate::middleware::Key::from($key), $crate::middleware::Value::from($val)); )*
-        $crate::middleware::containers::Dictionary::new($max_depth, map)
+        $crate::middleware::containers::Dictionary::new( map)
     });
 }
 
 impl Dictionary {
-    /// max_depth determines the depth of the underlying MerkleTree, allowing to
-    /// store 2^max_depth elements in the Dictionary
-    pub fn new(max_depth: usize, kvs: HashMap<Key, Value>) -> Result<Self> {
+    pub fn new(kvs: HashMap<Key, Value>) -> Self {
         let kvs_raw: HashMap<RawValue, RawValue> =
             kvs.iter().map(|(k, v)| (k.raw(), v.raw())).collect();
-        Ok(Self {
-            mt: MerkleTree::new(max_depth, &kvs_raw)?,
-            max_depth,
+        Self {
+            mt: MerkleTree::new(&kvs_raw),
             kvs,
-        })
+        }
     }
     pub fn commitment(&self) -> Hash {
         self.mt.root()
@@ -82,45 +78,20 @@ impl Dictionary {
         self.kvs.remove(key);
         Ok(mtp)
     }
-    pub fn verify(
-        max_depth: usize,
-        root: Hash,
-        proof: &MerkleProof,
-        key: &Key,
-        value: &Value,
-    ) -> Result<()> {
+    pub fn verify(root: Hash, proof: &MerkleProof, key: &Key, value: &Value) -> Result<()> {
         let key = key.raw();
-        Ok(MerkleTree::verify(
-            max_depth,
-            root,
-            proof,
-            &key,
-            &value.raw(),
-        )?)
+        Ok(MerkleTree::verify(root, proof, &key, &value.raw())?)
     }
-    pub fn verify_nonexistence(
-        max_depth: usize,
-        root: Hash,
-        proof: &MerkleProof,
-        key: &Key,
-    ) -> Result<()> {
+    pub fn verify_nonexistence(root: Hash, proof: &MerkleProof, key: &Key) -> Result<()> {
         let key = key.raw();
-        Ok(MerkleTree::verify_nonexistence(
-            max_depth, root, proof, &key,
-        )?)
+        Ok(MerkleTree::verify_nonexistence(root, proof, &key)?)
     }
-    pub fn verify_state_transition(
-        max_depth: usize,
-        proof: &MerkleTreeStateTransitionProof,
-    ) -> Result<()> {
-        MerkleTree::verify_state_transition(max_depth, proof).map_err(|e| e.into())
+    pub fn verify_state_transition(proof: &MerkleTreeStateTransitionProof) -> Result<()> {
+        MerkleTree::verify_state_transition(proof).map_err(|e| e.into())
     }
     // TODO: Rename to dict to be consistent maybe?
     pub fn kvs(&self) -> &HashMap<Key, Value> {
         &self.kvs
-    }
-    pub fn max_depth(&self) -> usize {
-        self.max_depth
     }
 }
 
@@ -140,10 +111,9 @@ impl<'de> Deserialize<'de> for Dictionary {
         struct Aux {
             #[serde(serialize_with = "ordered_map")]
             kvs: HashMap<Key, Value>,
-            max_depth: usize,
         }
         let aux = Aux::deserialize(deserializer)?;
-        Dictionary::new(aux.max_depth, aux.kvs).map_err(serde::de::Error::custom)
+        Ok(Dictionary::new(aux.kvs))
     }
 }
 
@@ -155,15 +125,12 @@ pub struct Set {
     #[serde(skip)]
     #[schemars(skip)]
     mt: MerkleTree,
-    max_depth: usize,
     #[serde(serialize_with = "ordered_set")]
     set: HashSet<Value>,
 }
 
 impl Set {
-    /// max_depth determines the depth of the underlying MerkleTree, allowing to
-    /// store 2^max_depth elements in the Array
-    pub fn new(max_depth: usize, set: HashSet<Value>) -> Result<Self> {
+    pub fn new(set: HashSet<Value>) -> Self {
         let kvs_raw: HashMap<RawValue, RawValue> = set
             .iter()
             .map(|e| {
@@ -171,11 +138,10 @@ impl Set {
                 (rv, rv)
             })
             .collect();
-        Ok(Self {
-            mt: MerkleTree::new(max_depth, &kvs_raw)?,
-            max_depth,
+        Self {
+            mt: MerkleTree::new(&kvs_raw),
             set,
-        })
+        }
     }
     pub fn commitment(&self) -> Hash {
         self.mt.root()
@@ -203,32 +169,19 @@ impl Set {
         self.set.remove(value);
         Ok(mtp)
     }
-    pub fn verify(max_depth: usize, root: Hash, proof: &MerkleProof, value: &Value) -> Result<()> {
+    pub fn verify(root: Hash, proof: &MerkleProof, value: &Value) -> Result<()> {
         let rv = value.raw();
-        Ok(MerkleTree::verify(max_depth, root, proof, &rv, &rv)?)
+        Ok(MerkleTree::verify(root, proof, &rv, &rv)?)
     }
-    pub fn verify_nonexistence(
-        max_depth: usize,
-        root: Hash,
-        proof: &MerkleProof,
-        value: &Value,
-    ) -> Result<()> {
+    pub fn verify_nonexistence(root: Hash, proof: &MerkleProof, value: &Value) -> Result<()> {
         let rv = value.raw();
-        Ok(MerkleTree::verify_nonexistence(
-            max_depth, root, proof, &rv,
-        )?)
+        Ok(MerkleTree::verify_nonexistence(root, proof, &rv)?)
     }
-    pub fn verify_state_transition(
-        max_depth: usize,
-        proof: &MerkleTreeStateTransitionProof,
-    ) -> Result<()> {
-        MerkleTree::verify_state_transition(max_depth, proof).map_err(|e| e.into())
+    pub fn verify_state_transition(proof: &MerkleTreeStateTransitionProof) -> Result<()> {
+        MerkleTree::verify_state_transition(proof).map_err(|e| e.into())
     }
     pub fn set(&self) -> &HashSet<Value> {
         &self.set
-    }
-    pub fn max_depth(&self) -> usize {
-        self.max_depth
     }
 }
 
@@ -248,10 +201,9 @@ impl<'de> Deserialize<'de> for Set {
         struct Aux {
             #[serde(serialize_with = "ordered_set")]
             set: HashSet<Value>,
-            max_depth: usize,
         }
         let aux = Aux::deserialize(deserializer)?;
-        Set::new(aux.max_depth, aux.set).map_err(serde::de::Error::custom)
+        Ok(Set::new(aux.set))
     }
 }
 
@@ -264,25 +216,21 @@ pub struct Array {
     #[serde(skip)]
     #[schemars(skip)]
     mt: MerkleTree,
-    max_depth: usize,
     array: Vec<Value>,
 }
 
 impl Array {
-    /// max_depth determines the depth of the underlying MerkleTree, allowing to
-    /// store 2^max_depth elements in the Array
-    pub fn new(max_depth: usize, array: Vec<Value>) -> Result<Self> {
+    pub fn new(array: Vec<Value>) -> Self {
         let kvs_raw: HashMap<RawValue, RawValue> = array
             .iter()
             .enumerate()
             .map(|(i, e)| (RawValue::from(i as i64), e.raw()))
             .collect();
 
-        Ok(Self {
-            mt: MerkleTree::new(max_depth, &kvs_raw)?,
-            max_depth,
+        Self {
+            mt: MerkleTree::new(&kvs_raw),
             array,
-        })
+        }
     }
     pub fn commitment(&self) -> Hash {
         self.mt.root()
@@ -302,32 +250,19 @@ impl Array {
         self.array[i] = value.clone();
         Ok(mtp)
     }
-    pub fn verify(
-        max_depth: usize,
-        root: Hash,
-        proof: &MerkleProof,
-        i: usize,
-        value: &Value,
-    ) -> Result<()> {
+    pub fn verify(root: Hash, proof: &MerkleProof, i: usize, value: &Value) -> Result<()> {
         Ok(MerkleTree::verify(
-            max_depth,
             root,
             proof,
             &RawValue::from(i as i64),
             &value.raw(),
         )?)
     }
-    pub fn verify_state_transition(
-        max_depth: usize,
-        proof: &MerkleTreeStateTransitionProof,
-    ) -> Result<()> {
-        MerkleTree::verify_state_transition(max_depth, proof).map_err(|e| e.into())
+    pub fn verify_state_transition(proof: &MerkleTreeStateTransitionProof) -> Result<()> {
+        MerkleTree::verify_state_transition(proof).map_err(|e| e.into())
     }
     pub fn array(&self) -> &[Value] {
         &self.array
-    }
-    pub fn max_depth(&self) -> usize {
-        self.max_depth
     }
 }
 
@@ -346,9 +281,8 @@ impl<'de> Deserialize<'de> for Array {
         #[derive(Deserialize, JsonSchema)]
         struct Aux {
             array: Vec<Value>,
-            max_depth: usize,
         }
         let aux = Aux::deserialize(deserializer)?;
-        Array::new(aux.max_depth, aux.array).map_err(serde::de::Error::custom)
+        Ok(Array::new(aux.array))
     }
 }

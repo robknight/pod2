@@ -2329,8 +2329,8 @@ mod tests {
 
     #[test]
     fn test_operation_verify_eq() -> Result<()> {
-        let dict1 = dict!(32, {"hello" => 55})?;
-        let dict2 = dict!(32, {"world" => 55})?;
+        let dict1 = dict!({"hello" => 55});
+        let dict2 = dict!({"world" => 55});
         let st1: mainpod::Statement = Statement::contains(dict1.clone(), "hello", 55).into();
         let st2: mainpod::Statement = Statement::contains(dict2.clone(), "world", 55).into();
         let st: mainpod::Statement = Statement::equal(
@@ -2349,8 +2349,8 @@ mod tests {
 
     #[test]
     fn test_operation_verify_neq() -> Result<()> {
-        let dict1 = dict!(32, {"hello" => 55})?;
-        let dict2 = dict!(32, {"world" => 75})?;
+        let dict1 = dict!({"hello" => 55});
+        let dict2 = dict!({"world" => 75});
         let st1: mainpod::Statement = Statement::contains(dict1.clone(), "hello", 55).into();
         let st2: mainpod::Statement = Statement::contains(dict2.clone(), "world", 75).into();
         let st: mainpod::Statement = Statement::not_equal(
@@ -2369,8 +2369,8 @@ mod tests {
 
     #[test]
     fn test_operation_verify_lt() -> Result<()> {
-        let dict1 = dict!(32, {"hello" => 55})?;
-        let dict2 = dict!(32, {"hello" => 56})?;
+        let dict1 = dict!({"hello" => 55});
+        let dict2 = dict!({"hello" => 56});
         let st1: mainpod::Statement = Statement::contains(dict1.clone(), "hello", 55).into();
         let st2: mainpod::Statement = Statement::contains(dict2.clone(), "hello", 56).into();
         let st: mainpod::Statement = Statement::lt(
@@ -2387,8 +2387,8 @@ mod tests {
         operation_verify(st, op, prev_statements, Aux::default())?;
 
         // Also check negative < negative
-        let dict3 = dict!(32, {"hola" => -56})?;
-        let dict4 = dict!(32, {"mundo" => -55})?;
+        let dict3 = dict!({"hola" => -56});
+        let dict4 = dict!({"mundo" => -55});
         let st3: mainpod::Statement = Statement::contains(dict3.clone(), "hola", -56).into();
         let st4: mainpod::Statement = Statement::contains(dict4.clone(), "mundo", -55).into();
         let st: mainpod::Statement = Statement::lt(
@@ -2421,12 +2421,12 @@ mod tests {
 
     #[test]
     fn test_operation_verify_lteq() -> Result<()> {
-        let local = dict!(32, {
+        let local = dict!({
             "n55" => 55,
             "n56" => 56,
             "n_56" => -56,
             "n_55" => -55,
-        })?;
+        });
         let st1: mainpod::Statement = Statement::contains(local.clone(), "n55", 55).into();
         let st2: mainpod::Statement = Statement::contains(local.clone(), "n56", 56).into();
         let st: mainpod::Statement = Statement::lt_eq(
@@ -2511,11 +2511,11 @@ mod tests {
         let v1 = hash_values(&input_values);
         let [v2, v3] = input_values;
 
-        let local = dict!(32, {
+        let local = dict!({
             "hola" => v1,
             "mundo" => v2.clone(),
             "!" => v3.clone(),
-        })?;
+        });
 
         let st1: mainpod::Statement = Statement::contains(local.clone(), "hola", v1).into();
         let st2: mainpod::Statement = Statement::contains(local.clone(), "mundo", v2).into();
@@ -2549,11 +2549,11 @@ mod tests {
                 overflow.not().then_some((a, b, sum))
             })
             .try_for_each(|(a, b, sum)| {
-                let local = dict!(32, {
+                let local = dict!({
                     "sum" => sum,
                     "a" => a,
                     "b" => b,
-                })?;
+                });
 
                 let st1: mainpod::Statement = Statement::contains(local.clone(), "sum", sum).into();
                 let st2: mainpod::Statement = Statement::contains(local.clone(), "a", a).into();
@@ -2588,11 +2588,11 @@ mod tests {
                 overflow.not().then_some((a, b, prod))
             })
             .try_for_each(|(a, b, prod)| {
-                let local = dict!(32, {
+                let local = dict!({
                     "prod" => prod,
                     "a" => a,
                     "b" => b,
-                })?;
+                });
 
                 let st1: mainpod::Statement =
                     Statement::contains(local.clone(), "prod", prod).into();
@@ -2623,11 +2623,11 @@ mod tests {
     fn test_operation_verify_maxof() -> Result<()> {
         I64_TEST_PAIRS.into_iter().try_for_each(|(a, b)| {
             let max = i64::max(a, b);
-            let local = dict!(32, {
+            let local = dict!({
                 "max" => max,
                 "a" => a,
                 "b" => b,
-            })?;
+            });
 
             let st1: mainpod::Statement = Statement::contains(local.clone(), "max", max).into();
             let st2: mainpod::Statement = Statement::contains(local.clone(), "a", a).into();
@@ -2689,10 +2689,10 @@ mod tests {
 
     #[test]
     fn test_operation_verify_lt_to_neq() -> Result<()> {
-        let local = dict!(32,{
+        let local = dict!({
             "a" => 10,
             "b" => 20,
-        })?;
+        });
         let st: mainpod::Statement = Statement::not_equal(
             AnchoredKey::from((&local, "a")),
             AnchoredKey::from((&local, "b")),
@@ -2714,11 +2714,11 @@ mod tests {
 
     #[test]
     fn test_operation_verify_transitive_eq() -> Result<()> {
-        let local = dict!(32,{
+        let local = dict!({
             "a" => 10,
             "b" => 10,
             "c" => 10,
-        })?;
+        });
         let st: mainpod::Statement = Statement::equal(
             AnchoredKey::from((&local, "a")),
             AnchoredKey::from((&local, "c")),
@@ -2745,8 +2745,6 @@ mod tests {
 
     #[test]
     fn test_operation_verify_sintains() -> Result<()> {
-        let params = Params::default();
-
         let kvs = [
             (1.into(), 55.into()),
             (2.into(), 88.into()),
@@ -2754,14 +2752,14 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let mt = MerkleTree::new(params.max_depth_mt_containers, &kvs)?;
+        let mt = MerkleTree::new(&kvs);
 
         let root = mt.root();
         let key = Value::from(5);
-        let local = dict!(32,{
+        let local = dict!({
             "merkle_root" => root,
             "key" => key.clone(),
-        })?;
+        });
         let root_ak = AnchoredKey::from((&local, "merkle_root"));
         let key_ak = AnchoredKey::from((&local, "key"));
 
@@ -2785,8 +2783,6 @@ mod tests {
 
     #[test]
     fn test_operation_verify_contains() -> Result<()> {
-        let params = Params::default();
-
         let kvs = [
             (1.into(), 55.into()),
             (2.into(), 88.into()),
@@ -2794,16 +2790,16 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let mt = MerkleTree::new(params.max_depth_mt_containers, &kvs)?;
+        let mt = MerkleTree::new(&kvs);
 
         let root = mt.root();
         let key = Value::from(175);
         let (value, key_pf) = mt.prove(&key.raw())?;
-        let local = dict!(32,{
+        let local = dict!({
             "merkle_root" => root,
             "key" => key.clone(),
             "value" => value,
-        })?;
+        });
         let root_ak = AnchoredKey::from((&local, "merkle_root"));
         let key_ak = AnchoredKey::from((&local, "key"));
         let value_ak = AnchoredKey::from((&local, "value"));
@@ -2833,9 +2829,7 @@ mod tests {
 
     #[test]
     fn test_operation_verify_merkle_insert() -> Result<()> {
-        let params = Params::default();
-
-        let mut tree = MerkleTree::new(params.max_depth_mt_containers, &[].into())?;
+        let mut tree = MerkleTree::new(&[].into());
 
         let key = Value::from(175);
         let value = Value::from(0);
@@ -2862,12 +2856,7 @@ mod tests {
 
     #[test]
     fn test_operation_verify_merkle_update() -> Result<()> {
-        let params = Params::default();
-
-        let mut tree = MerkleTree::new(
-            params.max_depth_mt_containers,
-            &[(175.into(), 55.into())].into(),
-        )?;
+        let mut tree = MerkleTree::new(&[(175.into(), 55.into())].into());
 
         let key = Value::from(175);
         let value = Value::from(0);
@@ -2894,12 +2883,7 @@ mod tests {
 
     #[test]
     fn test_operation_verify_merkle_delete() -> Result<()> {
-        let params = Params::default();
-
-        let mut tree = MerkleTree::new(
-            params.max_depth_mt_containers,
-            &[(175.into(), 55.into())].into(),
-        )?;
+        let mut tree = MerkleTree::new(&[(175.into(), 55.into())].into());
 
         let key = Value::from(175);
         let state_transition_proof = tree.delete(&key.raw())?;

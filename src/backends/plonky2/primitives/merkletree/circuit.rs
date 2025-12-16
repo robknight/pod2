@@ -29,9 +29,9 @@ use crate::{
     backends::plonky2::{
         basetypes::D,
         circuits::common::{CircuitBuilderPod, ValueTarget},
-        error::Result,
+        error::{Error, Result},
         primitives::merkletree::{
-            MerkleClaimAndProof, MerkleTreeOp, MerkleTreeStateTransitionProof,
+            MerkleClaimAndProof, MerkleTreeOp, MerkleTreeStateTransitionProof, TreeError,
         },
     },
     measure_gates_begin, measure_gates_end,
@@ -159,6 +159,13 @@ impl MerkleClaimAndProofTarget {
         enabled: bool,
         mp: &MerkleClaimAndProof,
     ) -> Result<()> {
+        if mp.proof.siblings.len() > self.max_depth {
+            return Err(Error::Tree(TreeError::circuit_depth_too_small(
+                self.max_depth,
+                mp.proof.siblings.len(),
+            )));
+        }
+
         pw.set_bool_target(self.enabled, enabled)?;
         pw.set_hash_target(self.root, HashOut::from_vec(mp.root.0.to_vec()))?;
         pw.set_target_arr(&self.key.elements, &mp.key.0)?;
@@ -166,7 +173,6 @@ impl MerkleClaimAndProofTarget {
         pw.set_bool_target(self.existence, mp.proof.existence)?;
 
         // pad siblings with zeros to length max_depth
-        assert!(mp.proof.siblings.len() <= self.max_depth);
         for (i, sibling) in mp
             .proof
             .siblings
@@ -265,6 +271,12 @@ impl MerkleProofExistenceTarget {
         mp: &MerkleClaimAndProof,
     ) -> Result<()> {
         assert!(mp.proof.existence); // sanity check
+        if mp.proof.siblings.len() > self.max_depth {
+            return Err(Error::Tree(TreeError::circuit_depth_too_small(
+                self.max_depth,
+                mp.proof.siblings.len(),
+            )));
+        }
 
         pw.set_bool_target(self.enabled, enabled)?;
         pw.set_hash_target(self.root, HashOut::from_vec(mp.root.0.to_vec()))?;
@@ -272,7 +284,6 @@ impl MerkleProofExistenceTarget {
         pw.set_target_arr(&self.value.elements, &mp.value.0)?;
 
         // pad siblings with zeros to length max_depth
-        assert!(mp.proof.siblings.len() <= self.max_depth);
         for (i, sibling) in mp
             .proof
             .siblings
@@ -610,6 +621,14 @@ impl MerkleTreeStateTransitionProofTarget {
         enabled: bool,
         mp: &MerkleTreeStateTransitionProof,
     ) -> Result<()> {
+        let new_siblings = mp.siblings.clone();
+        if new_siblings.len() > self.max_depth {
+            return Err(Error::Tree(TreeError::circuit_depth_too_small(
+                self.max_depth,
+                new_siblings.len(),
+            )));
+        }
+
         pw.set_bool_target(self.enabled, enabled)?;
         pw.set_target(self.op, F::from_canonical_u8(mp.op as u8))?;
 
@@ -633,9 +652,6 @@ impl MerkleTreeStateTransitionProofTarget {
         pw.set_target_arr(&self.op_key.elements, &mp.op_key.0)?;
         pw.set_target_arr(&self.op_value.elements, &mp.op_value.0)?;
 
-        let new_siblings = mp.siblings.clone();
-
-        assert!(new_siblings.len() <= self.max_depth);
         for (i, sibling) in new_siblings
             .iter()
             .chain(iter::repeat(&EMPTY_HASH))
@@ -683,7 +699,7 @@ pub mod tests {
             let mut pw = PartialWitness::<F>::new();
 
             let key = RawValue::from(hash_value(&RawValue::from(i)));
-            let expected_path = keypath(max_depth, key)?;
+            let expected_path = keypath(key);
 
             // small circuit logic to check
             // expected_path_targ==keypath_target(key_targ)
@@ -769,7 +785,7 @@ pub mod tests {
             );
         }
 
-        let tree = MerkleTree::new(max_depth, &kvs)?;
+        let tree = MerkleTree::new(&kvs);
 
         let (key, value, proof) = if existence {
             let key = RawValue::from(hash_value(&RawValue::from(5)));
@@ -783,9 +799,9 @@ pub mod tests {
         assert_eq!(proof.existence, existence);
 
         if existence {
-            MerkleTree::verify(max_depth, tree.root(), &proof, &key, &value)?;
+            MerkleTree::verify(tree.root(), &proof, &key, &value)?;
         } else {
-            MerkleTree::verify_nonexistence(max_depth, tree.root(), &proof, &key)?;
+            MerkleTree::verify_nonexistence(tree.root(), &proof, &key)?;
         }
 
         // circuit
@@ -826,14 +842,14 @@ pub mod tests {
             );
         }
 
-        let tree = MerkleTree::new(max_depth, &kvs)?;
+        let tree = MerkleTree::new(&kvs);
 
         let key = RawValue::from(hash_value(&RawValue::from(5)));
         let (value, proof) = tree.prove(&key)?;
         assert_eq!(value, RawValue::from(5));
         assert!(proof.existence);
 
-        MerkleTree::verify(max_depth, tree.root(), &proof, &key, &value)?;
+        MerkleTree::verify(tree.root(), &proof, &key, &value)?;
 
         // circuit
         let config = CircuitConfig::standard_recursion_config();
@@ -877,7 +893,7 @@ pub mod tests {
         kvs.insert(RawValue::from(13), RawValue::from(1013));
 
         let max_depth = 5;
-        let tree = MerkleTree::new(max_depth, &kvs)?;
+        let tree = MerkleTree::new(&kvs);
         // existence
         test_merkletree_edgecase_opt(max_depth, &tree, RawValue::from(5))?;
         // non-existence case i) expected leaf does not exist
@@ -906,9 +922,9 @@ pub mod tests {
 
         // verify the proof (non circuit)
         if proof.existence {
-            MerkleTree::verify(max_depth, tree.root(), &proof, &key, &value)?;
+            MerkleTree::verify(tree.root(), &proof, &key, &value)?;
         } else {
-            MerkleTree::verify_nonexistence(max_depth, tree.root(), &proof, &key)?;
+            MerkleTree::verify_nonexistence(tree.root(), &proof, &key)?;
         }
 
         // circuit
@@ -939,7 +955,7 @@ pub mod tests {
             kvs.insert(RawValue::from(i), RawValue::from(i));
         }
         let max_depth = 16;
-        let tree = MerkleTree::new(max_depth, &kvs)?;
+        let tree = MerkleTree::new(&kvs);
 
         let key = RawValue::from(3);
         let (value, proof) = tree.prove(&key)?;
@@ -947,11 +963,11 @@ pub mod tests {
         // build another tree with an extra key-value, so that it has a
         // different root
         kvs.insert(RawValue::from(100), RawValue::from(100));
-        let tree2 = MerkleTree::new(max_depth, &kvs)?;
+        let tree2 = MerkleTree::new(&kvs);
 
-        MerkleTree::verify(max_depth, tree.root(), &proof, &key, &value)?;
+        MerkleTree::verify(tree.root(), &proof, &key, &value)?;
         assert_eq!(
-            MerkleTree::verify(max_depth, tree2.root(), &proof, &key, &value)
+            MerkleTree::verify(tree2.root(), &proof, &key, &value)
                 .unwrap_err()
                 .inner()
                 .unwrap()
@@ -1002,10 +1018,10 @@ pub mod tests {
     ) -> Result<()> {
         // sanity check, run the out-circuit proof verification
         if expect_pass {
-            MerkleTree::verify_state_transition(max_depth, state_transition_proof)?;
+            MerkleTree::verify_state_transition(state_transition_proof)?;
         } else {
             // expect out-circuit verification to fail
-            let _ = MerkleTree::verify_state_transition(max_depth, state_transition_proof).is_err();
+            let _ = MerkleTree::verify_state_transition(state_transition_proof).is_err();
         }
 
         let config = CircuitConfig::standard_recursion_config();
@@ -1034,7 +1050,7 @@ pub mod tests {
         for i in 0..8 {
             kvs.insert(RawValue::from(i), RawValue::from(1000 + i));
         }
-        let mut tree = MerkleTree::new(max_depth, &kvs)?;
+        let mut tree = MerkleTree::new(&kvs);
 
         // key=37 shares path with key=5, till the level 6, needing 2 extra
         // 'empty' nodes between the original position of key=5 with the new
@@ -1093,7 +1109,7 @@ pub mod tests {
         for i in 0..8 {
             kvs.insert(RawValue::from(i), RawValue::from(1000 + i));
         }
-        let mut tree = MerkleTree::new(max_depth, &kvs)?;
+        let mut tree = MerkleTree::new(&kvs);
 
         let old_root = tree.root();
         let key = RawValue::from(4294967295); // 0xffffffff
@@ -1157,7 +1173,7 @@ pub mod tests {
         for i in 0..8 {
             kvs.insert(RawValue::from(i), RawValue::from(1000 + i));
         }
-        let mut tree = MerkleTree::new(max_depth, &kvs)?;
+        let mut tree = MerkleTree::new(&kvs);
 
         // key=37 shares path with key=5, till the level 6, needing 2 extra
         // 'empty' nodes between the original position of key=5 with the new
@@ -1200,7 +1216,6 @@ pub mod tests {
             other_leaf: None,
         };
         let altered_root = altered_proof.compute_root_from_leaf(
-            max_depth,
             &state_transition_proof.op_key,
             Some(state_transition_proof.op_value),
         )?;
@@ -1220,7 +1235,7 @@ pub mod tests {
         for i in 0..8 {
             kvs.insert(RawValue::from(i), RawValue::from(1000 + i));
         }
-        let mut tree = MerkleTree::new(max_depth, &kvs)?;
+        let mut tree = MerkleTree::new(&kvs);
 
         let key = RawValue::from(37);
         let value = RawValue::from(1037);
