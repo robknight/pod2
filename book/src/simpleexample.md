@@ -145,3 +145,57 @@ eth_friend(?1, ?2, ?3, ?4) = and<
     Equal(?5["attestation"], ?3[?4])
 >
 ```
+
+## Another perspective
+When working with statements and operations, it might be useful to see them from another perspective:
+
+- A *predicate* is a relation formula, which when filled with values becomes a
+  *statement*.
+- A *statement* can be seen as the *constraints* of a traditional zk-circuit,
+  which can be true or false.
+- An *operation* comprises the deduction rules, which are rules used to deduce
+  new statements from previous statements or used to construct new statements
+  from values.
+
+$$
+predicate \cong circuit/relation~to~be~fulfilled\\
+statement \cong constraints~filled~with~the~witness\\
+operations \cong deduction~rules
+$$
+
+
+For example,
+- `Equal` for integers is a *predicate*
+- `st_1 = Equal(A, B)` is a *statement*
+- `st_2 = Equal(B, C)` is a *statement*
+- `st_3 = TransitiveEqualFromStatements(st_1, st_2)` is an *operation*, which yields the statement `st_3 = Equal(A, C)`
+
+
+
+
+<div style="display:flex;">
+<div style="padding:10px;max-width:50%; border-right:1px solid #ccc;">
+    
+So, for example, for the given predicate:
+
+```
+IsComposite(n, private: a, b) = AND(
+  ProductOf(n, a, b)
+  GtFromEntries(a, 1)
+  GtFromEntries(b, 1)
+)
+```
+
+</div>
+<div style="padding:10px;max-width:45%;">
+    
+We can view it as:
+
+The *statement* `IsComposite(n)` is `true` if and only if $\exists$ `n`, `a`, `b`
+ such that the following statements hold:
+- $n = a \cdot b$
+- $a > 1$
+- $b > 1$
+
+</div>
+</div>
