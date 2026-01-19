@@ -170,6 +170,7 @@ impl ToFields for StatementTmpl {
 
         let mut fields: Vec<F> = self
             .pred
+            .hash(params)
             .to_fields(params)
             .into_iter()
             .chain(self.args.iter().flat_map(|sta| sta.to_fields(params)))
