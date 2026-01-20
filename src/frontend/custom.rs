@@ -7,7 +7,7 @@ use crate::{
     frontend::{AnchoredKey, Error, Result, Statement, StatementArg},
     middleware::{
         self, hash_str, CustomPredicate, CustomPredicateBatch, Hash, Key, NativePredicate, Params,
-        Predicate, StatementTmpl, StatementTmplArg, ToFields, Value, Wildcard,
+        Predicate, PredicateOrWildcard, StatementTmpl, StatementTmplArg, ToFields, Value, Wildcard,
     },
 };
 
@@ -217,7 +217,8 @@ impl CustomPredicateBatchBuilder {
                     })
                     .collect::<Result<_>>()?;
                 Ok(StatementTmpl {
-                    pred: stb.predicate.clone(),
+                    // TODO: Support wildcard
+                    pred_or_wc: PredicateOrWildcard::Predicate(stb.predicate.clone()),
                     args,
                 })
             })
@@ -319,7 +320,10 @@ mod tests {
         // Check that the desugared predicate is the same as the one in the statement template
         assert_eq!(
             desugared_gt.predicate(),
-            *batch_clone.predicates()[0].statements[0].pred()
+            *batch_clone.predicates()[0].statements[0]
+                .pred_or_wc()
+                .as_pred()
+                .unwrap()
         );
 
         // Check that our custom predicate matches the statement template
@@ -366,7 +370,10 @@ mod tests {
         );
         assert_eq!(
             set_contains.predicate(),
-            *batch_clone.predicates()[0].statements[0].pred()
+            *batch_clone.predicates()[0].statements[0]
+                .pred_or_wc()
+                .as_pred()
+                .unwrap()
         );
 
         let set_contains_custom_pred = CustomPredicateRef::new(batch, 0);

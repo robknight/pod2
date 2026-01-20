@@ -18,8 +18,8 @@ use crate::{
     },
     middleware::{
         self, containers, CustomPredicateBatch, IntroPredicateRef, NativePredicate, Params,
-        Predicate, StatementTmpl as MWStatementTmpl, StatementTmplArg as MWStatementTmplArg,
-        Wildcard,
+        Predicate, PredicateOrWildcard, StatementTmpl as MWStatementTmpl,
+        StatementTmplArg as MWStatementTmplArg, Wildcard,
     },
 };
 
@@ -201,7 +201,8 @@ impl<'a> Lowerer<'a> {
         }
 
         Ok(MWStatementTmpl {
-            pred: predicate,
+            // TODO: Support wildcard
+            pred_or_wc: PredicateOrWildcard::Predicate(predicate),
             args: mw_args,
         })
     }
@@ -596,7 +597,10 @@ mod tests {
         let stmt = &pred2.statements()[0];
 
         // Should be BatchSelf(0) referring to pred1
-        assert!(matches!(stmt.pred, Predicate::BatchSelf(0)));
+        assert!(matches!(
+            stmt.pred_or_wc,
+            PredicateOrWildcard::Predicate(Predicate::BatchSelf(0))
+        ));
     }
 
     #[test]
@@ -632,8 +636,8 @@ mod tests {
 
         // Should desugar to the Contains predicate
         assert!(matches!(
-            stmt.pred,
-            Predicate::Native(NativePredicate::Contains)
+            stmt.pred_or_wc,
+            PredicateOrWildcard::Predicate(Predicate::Native(NativePredicate::Contains))
         ));
     }
 

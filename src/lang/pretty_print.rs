@@ -5,7 +5,8 @@ use std::fmt::Write;
 use crate::{
     frontend::PodRequest,
     middleware::{
-        CustomPredicate, CustomPredicateBatch, Predicate, StatementTmpl, StatementTmplArg, Value,
+        CustomPredicate, CustomPredicateBatch, Predicate, PredicateOrWildcard, StatementTmpl,
+        StatementTmplArg, Value,
     },
 };
 
@@ -57,26 +58,32 @@ impl StatementTmpl {
         w: &mut dyn Write,
         batch_context: Option<&CustomPredicateBatch>,
     ) -> std::fmt::Result {
-        match &self.pred {
-            Predicate::Native(native_pred) => {
-                write!(w, "{}", native_pred)?;
-            }
-            Predicate::Custom(custom_ref) => {
-                write!(w, "{}", custom_ref.predicate().name)?;
-            }
-            Predicate::Intro(intro_ref) => {
-                write!(w, "{}", intro_ref.name)?;
-            }
-            Predicate::BatchSelf(index) => {
-                if let Some(batch) = batch_context {
-                    if let Some(predicate) = batch.predicates.get(*index) {
-                        write!(w, "{}", predicate.name)?;
+        match &self.pred_or_wc {
+            PredicateOrWildcard::Predicate(pred) => match pred {
+                Predicate::Native(native_pred) => {
+                    write!(w, "{}", native_pred)?;
+                }
+                Predicate::Custom(custom_ref) => {
+                    write!(w, "{}", custom_ref.predicate().name)?;
+                }
+                Predicate::Intro(intro_ref) => {
+                    write!(w, "{}", intro_ref.name)?;
+                }
+                Predicate::BatchSelf(index) => {
+                    if let Some(batch) = batch_context {
+                        if let Some(predicate) = batch.predicates.get(*index) {
+                            write!(w, "{}", predicate.name)?;
+                        } else {
+                            write!(w, "batch_self_{}", index)?;
+                        }
                     } else {
                         write!(w, "batch_self_{}", index)?;
                     }
-                } else {
-                    write!(w, "batch_self_{}", index)?;
                 }
+            },
+            PredicateOrWildcard::Wildcard(wc) => {
+                // TODO: Decide the syntax for a wildcard predicate
+                write!(w, "?{}", wc.name)?;
             }
         }
 
@@ -223,13 +230,17 @@ mod tests {
         Wildcard::new(name.to_string(), index)
     }
 
+    fn pred_lit(pred: Predicate) -> PredicateOrWildcard {
+        PredicateOrWildcard::Predicate(pred)
+    }
+
     #[test]
     fn test_simple_predicate_pretty_print() {
         let params = Params::default();
 
         // Create a simple predicate: is_equal(PodA, PodB) = AND(Equal(PodA["key"], PodB["key"]))
         let statements = vec![StatementTmpl {
-            pred: Predicate::Native(NativePredicate::Equal),
+            pred_or_wc: pred_lit(Predicate::Native(NativePredicate::Equal)),
             args: vec![
                 StatementTmplArg::AnchoredKey(
                     create_test_wildcard("PodA", 0),
@@ -265,7 +276,7 @@ mod tests {
 
         // Create: uses_private(A, private: Temp) = AND(Equal(A["input"], Temp["const"]))
         let statements = vec![StatementTmpl {
-            pred: Predicate::Native(NativePredicate::Equal),
+            pred_or_wc: pred_lit(Predicate::Native(NativePredicate::Equal)),
             args: vec![
                 StatementTmplArg::AnchoredKey(
                     create_test_wildcard("A", 0),
@@ -301,7 +312,7 @@ mod tests {
 
         // Create: check_value(Pod) = AND(Equal(Pod["field"], 42))
         let statements = vec![StatementTmpl {
-            pred: Predicate::Native(NativePredicate::Equal),
+            pred_or_wc: pred_lit(Predicate::Native(NativePredicate::Equal)),
             args: vec![
                 StatementTmplArg::AnchoredKey(
                     create_test_wildcard("Pod", 0),
@@ -335,7 +346,7 @@ mod tests {
         // Create: either_or(A, B) = OR(Equal(A["x"], 1), Equal(B["y"], 2))
         let statements = vec![
             StatementTmpl {
-                pred: Predicate::Native(NativePredicate::Equal),
+                pred_or_wc: pred_lit(Predicate::Native(NativePredicate::Equal)),
                 args: vec![
                     StatementTmplArg::AnchoredKey(
                         create_test_wildcard("A", 0),
@@ -345,7 +356,7 @@ mod tests {
                 ],
             },
             StatementTmpl {
-                pred: Predicate::Native(NativePredicate::Equal),
+                pred_or_wc: pred_lit(Predicate::Native(NativePredicate::Equal)),
                 args: vec![
                     StatementTmplArg::AnchoredKey(
                         create_test_wildcard("B", 1),
