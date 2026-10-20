@@ -27,8 +27,10 @@ impl From<&CustomPredicateRef> for CustomPredicateId {
     }
 }
 
-/// Resource cost of a single operation. Each field corresponds to a
-/// per-POD limit in `Params`.
+/// Resource costs and scheduling metadata for a single operation.
+/// Numeric fields are additive resource quantities corresponding to
+/// per-POD limits in `Params`; `is_external_opening` classifies the
+/// operation for scheduling and is not accumulated into resource totals.
 ///
 /// Merkle proofs and state transitions are split into `_small` and
 /// `_medium` because the POD circuit exposes two slot pools per category
@@ -46,6 +48,10 @@ impl From<&CustomPredicateRef> for CustomPredicateId {
 ///   op kind.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OperationCost {
+    /// True for a statement copied directly from an external input POD.
+    /// Used to prioritize openings early in the chain, not as a resource count.
+    #[serde(default)]
+    pub is_external_opening: bool,
     /// `Contains`-family proofs on a shallow tree (depth <=
     /// `max_depth_small`). May occupy either a small or medium state slot.
     pub merkle_proofs_small: usize,
@@ -247,6 +253,9 @@ impl OperationCost {
                 NativeOperation::PublicKeyFromEntries => {
                     cost.public_key = 1;
                 }
+                NativeOperation::OpenInputStatement => {
+                    cost.is_external_opening = true;
+                }
                 // Zero-cost ops (no per-POD resource consumed).
                 NativeOperation::None
                 | NativeOperation::EqualFromEntries
@@ -259,8 +268,6 @@ impl OperationCost {
                 | NativeOperation::ProductFromEntries
                 | NativeOperation::MaxFromEntries
                 | NativeOperation::HashFromEntries
-                // Tracked separately by the partitioner.
-                | NativeOperation::OpenInputStatement
                 // Syntactic sugar variants (lowered before proving).
                 | NativeOperation::GtEqFromEntries
                 | NativeOperation::GtFromEntries
@@ -359,6 +366,16 @@ mod tests {
         );
         assert_eq!(pk.public_key, 1);
         assert_eq!(pk.signed_by, 0);
+    }
+
+    #[test]
+    fn open_input_is_marked_for_early_scheduling() {
+        let cost = OperationCost::from_operation(
+            &native_op(NativeOperation::OpenInputStatement, OperationAux::None),
+            &Params::default(),
+        );
+
+        assert!(cost.is_external_opening);
     }
 
     /// Contains on a tree at depth `<= max_depth_small` is small-eligible;
