@@ -385,6 +385,8 @@ fn store_container_mt(tx: &mut dyn TX, container: &Container) -> Result<()> {
 
 // Store a value into the database while flattening nested containers
 fn store_value(tx: &mut dyn TX, v: Value) -> Result<()> {
+    // We skip storing containers as values and instead store them as
+    // merkle trees via the Container type.
     match &v.typed {
         TypedValue::Container(inner) => store_container_mt(tx, inner)?,
         _ => tx.store_value(v).map_err(Error::Database)?,
@@ -393,20 +395,22 @@ fn store_value(tx: &mut dyn TX, v: Value) -> Result<()> {
 }
 
 fn load_value(db: &dyn db::DB, value_raw: RawValue) -> Result<Value> {
-    match db.load_value(value_raw) {
+    // We try loading a merkle tree first, and if one
+    // doesn't exist then we try to load a shallow value from the db.
+    let root = Hash(value_raw.0);
+    match db.load_node(root) {
         Err(e) => Err(Error::Database(e)),
-        Ok(Some(v)) => Ok(v),
-        Ok(None) => {
-            // We skip storing containers as values and instead store them as
-            // merkle trees via the Container type.
-            if let Ok(c) = Container::from_db(Hash(value_raw.0), db.clone_box()) {
-                Ok(Value::from(c))
-            } else {
-                Err(Error::custom(format!(
-                    "Value from {value_raw} not found in DB"
-                )))
-            }
-        }
+        Ok(Some(_node)) => Ok(Value::from(Container::from_db_unchecked(
+            root,
+            db.clone_box(),
+        )?)),
+        Ok(None) => match db.load_value(value_raw) {
+            Err(e) => Err(Error::Database(e)),
+            Ok(Some(v)) => Ok(v),
+            Ok(None) => Err(Error::custom(format!(
+                "Value from {value_raw} not found in DB"
+            ))),
+        },
     }
 }
 
@@ -451,14 +455,17 @@ impl Container {
     fn empty_with_db(db: Box<dyn DB>) -> Self {
         Self::from_db(EMPTY_HASH, db).expect("EMPTY_HASH exists implicitly")
     }
-    pub fn from_db(root: Hash, db: Box<dyn DB>) -> Result<Self> {
-        // Make sure the root exists in the db
-        let _ = merkletree::load_node(db.as_ref(), root)?;
+    fn from_db_unchecked(root: Hash, db: Box<dyn DB>) -> Result<Self> {
         let kind = db
             .load_kind(root)
             .map_err(Error::Database)?
             .ok_or_else(|| Error::custom("container kind not found"))?;
         Ok(Self { kind, root, db })
+    }
+    pub fn from_db(root: Hash, db: Box<dyn DB>) -> Result<Self> {
+        // Make sure the root exists in the db
+        let _ = merkletree::load_node(db.as_ref(), root)?;
+        Self::from_db_unchecked(root, db)
     }
     pub fn commitment(&self) -> Hash {
         self.root
@@ -1188,5 +1195,99 @@ mod tests {
     #[test]
     fn test_mem_to_db() {
         test_databases(&_test_mem_to_db);
+    }
+
+    fn part_snapshot() -> Dictionary {
+        Dictionary::new(
+            [
+                (StrKey::from("serial"), Value::from("ABC-123")),
+                (StrKey::from("weight"), Value::from(10)),
+            ]
+            .into(),
+        )
+    }
+
+    fn certificate(snapshot: &Dictionary) -> Dictionary {
+        Dictionary::new([(StrKey::from("original"), Value::from(snapshot.clone()))].into())
+    }
+
+    fn assert_snapshot_is_readable(certificate: &Dictionary) {
+        let stored_snapshot = certificate
+            .get(&StrKey::from("original"))
+            .unwrap()
+            .expect("certificate contains its original snapshot");
+        let snapshot = stored_snapshot
+            .as_dictionary()
+            .unwrap_or_else(|| panic!("expected a snapshot dictionary, got {stored_snapshot}"));
+        assert_eq!(
+            snapshot.get(&StrKey::from("weight")).unwrap(),
+            Some(Value::from(10))
+        );
+    }
+
+    #[test]
+    fn dictionary_remains_readable_beside_its_raw_commitment() {
+        let snapshot = part_snapshot();
+        let identifier = Value::from(snapshot.commitment());
+        assert!(serde_json::to_string(&identifier)
+            .unwrap()
+            .contains("Untyped"));
+        assert_eq!(identifier.raw(), Value::from(snapshot.clone()).raw());
+
+        let mut certificate = certificate(&snapshot);
+        assert_snapshot_is_readable(&certificate);
+        certificate
+            .insert(&StrKey::from("part_id"), &identifier)
+            .unwrap();
+
+        assert_snapshot_is_readable(&certificate);
+    }
+
+    #[test]
+    fn dictionary_remains_readable_when_sibling_parent_contains_its_raw_commitment() {
+        let snapshot = part_snapshot();
+        let certificate = certificate(&snapshot);
+        let reference =
+            Dictionary::new([(StrKey::from("part_id"), Value::from(snapshot.commitment()))].into());
+        assert_snapshot_is_readable(&certificate);
+
+        let bundle = Dictionary::new(
+            [
+                (
+                    StrKey::from("certificate"),
+                    Value::from(certificate.clone()),
+                ),
+                (StrKey::from("reference"), Value::from(reference)),
+            ]
+            .into(),
+        );
+        assert_snapshot_is_readable(&certificate);
+        let bundled_certificate = bundle
+            .get(&StrKey::from("certificate"))
+            .unwrap()
+            .unwrap()
+            .as_dictionary()
+            .unwrap();
+
+        assert_snapshot_is_readable(&bundled_certificate);
+    }
+
+    #[test]
+    fn dictionary_remains_readable_when_clone_stores_its_raw_commitment() {
+        let snapshot = part_snapshot();
+        let certificate = certificate(&snapshot);
+        let original_root = certificate.commitment();
+        assert_snapshot_is_readable(&certificate);
+
+        let mut copy = certificate.clone();
+        copy.insert(
+            &StrKey::from("part_id"),
+            &Value::from(snapshot.commitment()),
+        )
+        .unwrap();
+        assert_ne!(copy.commitment(), original_root);
+        assert_eq!(certificate.commitment(), original_root);
+
+        assert_snapshot_is_readable(&certificate);
     }
 }

@@ -121,7 +121,7 @@ impl<'a> TX for MemTx<'a> {
         if let Some(old_value) = self.load_value(value_raw)? {
             // Never overwrite an old value with a RawValue.  Skip overwrite if old value is
             // already non-RawValue.
-            if value.is_raw() || !old_value.is_raw() {
+            if value.is_untyped() || !old_value.is_untyped() {
                 return Ok(());
             }
         };
