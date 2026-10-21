@@ -30,7 +30,8 @@ impl From<&CustomPredicateRef> for CustomPredicateId {
 /// Resource costs and scheduling metadata for a single operation.
 /// Numeric fields are additive resource quantities corresponding to
 /// per-POD limits in `Params`; `is_external_opening` classifies the
-/// operation for scheduling and is not accumulated into resource totals.
+/// operation, which decides both where its statement lives in the
+/// statement table and how early it is scheduled.
 ///
 /// Merkle proofs and state transitions are split into `_small` and
 /// `_medium` because the POD circuit exposes two slot pools per category
@@ -49,8 +50,8 @@ impl From<&CustomPredicateRef> for CustomPredicateId {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OperationCost {
     /// True for a statement copied directly from an external input POD.
-    /// Used to prioritize openings early in the chain, not as a resource count.
-    #[serde(default)]
+    /// It is materialized in the input statement region rather than a
+    /// universal statement slot, and is prioritized early in the chain.
     pub is_external_opening: bool,
     /// `Contains`-family proofs on a shallow tree (depth <=
     /// `max_depth_small`). May occupy either a small or medium state slot.
@@ -84,7 +85,7 @@ pub struct OperationCost {
 /// which is tracked separately.
 #[derive(Clone, Debug, Default)]
 pub struct ResourceTotals {
-    pub num_operations: usize,
+    pub num_universal_statements: usize,
     pub merkle_proofs_small: usize,
     pub merkle_proofs_medium: usize,
     pub merkle_state_transitions_small: usize,
@@ -109,13 +110,11 @@ impl ResourceTotals {
         t
     }
 
-    /// Minimum number of PODs required to perform the input operations, not
-    /// accounting for any additional cost of publishing and importing
-    /// statements across POD boundaries. This provides us with a lower bound
-    /// estimate, allowing us to exit early from the solver if we find any
-    /// configuration which achieves this lower bound.
+    /// Lower bound on POD count from universal statements and their tracked resources.
+    /// Imports and publication are accounted for separately, so an import-only stream returns
+    /// zero. Callers that know the problem is nonempty must raise the bound to at least one.
     pub fn min_pods(&self, params: &Params) -> usize {
-        if self.num_operations == 0 {
+        if self.num_universal_statements == 0 {
             return 0;
         }
         let mut bound = 1_usize;
@@ -125,7 +124,11 @@ impl ResourceTotals {
             }
         };
 
-        bump(&mut bound, self.num_operations, params.max_statements);
+        bump(
+            &mut bound,
+            self.num_universal_statements,
+            params.max_statements,
+        );
         bump(
             &mut bound,
             self.custom_pred_verifications,
@@ -167,7 +170,7 @@ impl ResourceTotals {
     /// (typically by deduping CP IDs in its own structure) before
     /// calling [`fits_in_pod`].
     pub fn add(&mut self, cost: &OperationCost) {
-        self.num_operations += 1;
+        self.num_universal_statements += usize::from(!cost.is_external_opening);
         self.merkle_proofs_small += cost.merkle_proofs_small;
         self.merkle_proofs_medium += cost.merkle_proofs_medium;
         self.merkle_state_transitions_small += cost.merkle_state_transitions_small;
@@ -179,13 +182,12 @@ impl ResourceTotals {
 
     /// True iff all sums fit in one POD under `params`.
     ///
-    /// The `num_operations` vs `max_statements` term is the local-output
-    /// contribution only; callers that need to account for publishing and
-    /// importing statements must do that separately.
+    /// `num_universal_statements` enforces `max_statements`; imports use the separate input
+    /// statement row budget.
     pub fn fits_in_pod(&self, params: &Params) -> bool {
         let state = &params.containers.state_ops;
         let transition = &params.containers.transition_ops;
-        self.num_operations <= params.max_statements
+        self.num_universal_statements <= params.max_statements
             && self.merkle_proofs_medium <= state.max_medium
             && self.merkle_proofs_small + self.merkle_proofs_medium <= state.max_total()
             && self.merkle_state_transitions_medium <= transition.max_medium
@@ -348,6 +350,19 @@ mod tests {
         })
     }
 
+    #[test]
+    fn open_input_uses_input_statement_region_in_resource_totals() {
+        let params = Params::default();
+        let cost = OperationCost::from_operation(
+            &native_op(NativeOperation::OpenInputStatement, OperationAux::None),
+            &params,
+        );
+
+        assert!(cost.is_external_opening);
+        let totals = ResourceTotals::accumulate([&cost]);
+        assert_eq!(totals.num_universal_statements, 0);
+    }
+
     /// Scalar-cost ops (SignedBy / PublicKeyOf) don't inspect the aux and
     /// land in their own cost dimension.
     #[test]
@@ -366,16 +381,6 @@ mod tests {
         );
         assert_eq!(pk.public_key, 1);
         assert_eq!(pk.signed_by, 0);
-    }
-
-    #[test]
-    fn open_input_is_marked_for_early_scheduling() {
-        let cost = OperationCost::from_operation(
-            &native_op(NativeOperation::OpenInputStatement, OperationAux::None),
-            &Params::default(),
-        );
-
-        assert!(cost.is_external_opening);
     }
 
     /// Contains on a tree at depth `<= max_depth_small` is small-eligible;

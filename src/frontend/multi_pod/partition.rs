@@ -20,8 +20,8 @@
 //! - **Cutting the ordering into segments**. Once the order is fixed
 //!   this collapses to a 1D problem: where do POD boundaries go?
 //!   Dynamic programming over prefixes solves it optimally in
-//!   O(n * W^2) where W = `max_statements` (see [`run_dp`]). It
-//!   also ensures feasibility in cases where a left-to-right greedy
+//!   O(n * W^2), where W is the combined capacity for universal and input statement rows
+//!   (see [`run_dp`]). It also ensures feasibility in cases where a left-to-right greedy
 //!   walk produces an infeasible partition; the per-ordering
 //!   feasibility-rescue counts in [`ordering_and_cutter_contribution_sweep`]
 //!   quantify how often this happens.
@@ -89,15 +89,23 @@ pub fn partition(input: &InputShape) -> Option<OutputShape> {
 
 /// Estimated lower bound on K. Returns the largest per-resource
 /// `ceil(total_r / cap_r)` across statement count, summable resources,
-/// and distinct custom-predicate IDs; no partition can beat that. Used
-/// by [`partition`] to early-exit ordering search once a candidate
-/// matches.
+/// distinct custom-predicate IDs and distinct external imports; no
+/// partition can beat that. Used by [`partition`] to early-exit ordering
+/// search once a candidate matches.
 ///
-/// This estimate is loose because it does not account for the maximum
-/// number of imported statements per POD, which might result in a higher
-/// K than the estimate.
+/// This estimate is loose because it does not account for statements
+/// imported from the previous POD in the chain, which also use input
+/// statement rows and might result in a higher K than the estimate.
 fn resource_lower_bound_k(input: &InputShape) -> usize {
-    ResourceTotals::accumulate(input.costs.iter()).min_pods(&input.params)
+    // Every external statement needs an input statement row in at least one POD.
+    let external_import_bound = input
+        .num_external_statements()
+        .div_ceil(input.params.max_open_input_statement_ops.max(1));
+    // Resource totals omit imports, but every nonempty problem still needs at least one POD.
+    ResourceTotals::accumulate(input.costs.iter())
+        .min_pods(&input.params)
+        .max(external_import_bound)
+        .max(usize::from(!input.costs.is_empty()))
 }
 
 /// Produce a topological ordering biased to keep mutually-fittable
@@ -170,7 +178,7 @@ pub(super) fn kahn_bin_packing(
         // prefer the lowest-tiebreak ready statement that fits, falling
         // back to lowest-tiebreak overall when nothing fits (which
         // closes the segment).
-        let (chosen_idx, opens_new_segment) = if state.totals.num_operations == 0 {
+        let (chosen_idx, opens_new_segment) = if ordering.len() == state.segment_start {
             // Empty segment: no coupling signal yet, identity tiebreak only.
             let i = ready
                 .iter()
@@ -429,10 +437,8 @@ impl GreedyState {
         ) {
             return None;
         }
-        // Only chain imports add statements beyond assigned nodes.
-        if tentative.num_operations + n_producers > params.max_statements {
-            return None;
-        }
+        // `fits_in_pod` enforces the local-statement limit; `tree_imports_ok` enforces the
+        // separate input statement region limit.
         Some(self.scratch_new_producers.len() + self.scratch_new_ext_imports.len())
     }
 
@@ -789,7 +795,7 @@ fn segment_feasible_with(
 ) -> bool {
     let params = &input.params;
     let segment = &ordering[start..end];
-    if segment.is_empty() || segment.len() > params.max_statements {
+    if segment.is_empty() {
         return false;
     }
 
@@ -848,11 +854,8 @@ fn segment_feasible_with(
     let n_ext_pods = workspace.external_pods.len();
     let n_chain_imports = workspace.prev_pod_producers.len();
 
-    // Only chain imports add statements beyond assigned nodes.
-    if segment.len() + n_chain_imports > params.max_statements {
-        return false;
-    }
-
+    // `ResourceTotals::fits_in_pod` enforces the local-statement limit; `tree_imports_ok` enforces
+    // the separate input statement region limit.
     let imports_ok =
         |n_chain: usize| tree_imports_ok(is_first_pod, n_chain, n_ext_imports, n_ext_pods, params);
     if !imports_ok(n_chain_imports) {
@@ -884,9 +887,6 @@ fn segment_feasible_with(
         }
     }
     let n_chain_imports_terminal = workspace.prev_pod_producers.len();
-    if segment.len() + n_chain_imports_terminal > params.max_statements {
-        return false;
-    }
     imports_ok(n_chain_imports_terminal)
 }
 
@@ -976,10 +976,12 @@ struct DpEntry {
 fn run_dp(ordering: &[usize], input: &InputShape) -> Option<Vec<Segment>> {
     let n = ordering.len();
     let mut checker = SegmentChecker::new(ordering, input);
-    // Each POD holds at most `max_statements` local statements, so any
-    // candidate segment longer than that is infeasible. This bounds
-    // the inner loop's start window per `end`.
-    let max_segment_len = input.params.max_statements;
+    // A segment can contain both universal statements and input statement rows. Their combined
+    // capacities bound the inner loop's start window per `end`.
+    let max_segment_len = input
+        .params
+        .max_statements
+        .saturating_add(input.params.max_open_input_statement_ops);
 
     // The table has `n + 1` cells, one per boundary position (including
     // 0 and n). `dp[0]` is the base case: the empty prefix needs 0 PODs.
@@ -1132,11 +1134,80 @@ mod tests {
     }
 
     #[test]
+    fn import_only_problem_has_one_pod_lower_bound() {
+        let input = InputShape {
+            costs: vec![
+                OperationCost {
+                    is_external_opening: true,
+                    ..OperationCost::default()
+                };
+                2
+            ],
+            dep_edges: vec![
+                vec![AbstractDep::External {
+                    pod: 0,
+                    statement: 0,
+                }],
+                vec![AbstractDep::External {
+                    pod: 0,
+                    statement: 1,
+                }],
+            ],
+            output_public_indices: vec![0, 1],
+            num_external_pods: 1,
+            statement_pod: vec![0, 0],
+            params: Params {
+                max_statements: 0,
+                max_open_input_statement_ops: 2,
+                max_input_pods: 1,
+                ..Params::default()
+            },
+        };
+        assert_eq!(resource_lower_bound_k(&input), 1);
+        let output = partition(&input).expect("imports fit without universal slots");
+        assert_eq!(output.pod_count, 1);
+        assert_eq!(output.pod_statements[0], vec![0, 1]);
+    }
+
+    #[test]
     fn single_pod_fits_when_caps_allow() {
         let input = independent_statements(3, vec![0, 1, 2], Params::default());
         let out = partition(&input).expect("should partition into a single POD");
         assert_eq!(out.pod_count, 1);
         assert_eq!(out.pod_statements[0], vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn input_statement_row_and_universal_statement_share_pod() {
+        let params = Params {
+            max_statements: 1,
+            max_open_input_statement_ops: 1,
+            ..Params::default()
+        };
+        let input = InputShape {
+            costs: vec![
+                OperationCost {
+                    is_external_opening: true,
+                    ..OperationCost::default()
+                },
+                OperationCost::default(),
+            ],
+            dep_edges: vec![
+                vec![AbstractDep::External {
+                    pod: 0,
+                    statement: 0,
+                }],
+                vec![AbstractDep::Internal(0)],
+            ],
+            output_public_indices: vec![1],
+            num_external_pods: 1,
+            statement_pod: vec![0],
+            params,
+        };
+
+        let out = partition(&input).expect("should fit in one POD");
+        assert_eq!(out.pod_count, 1);
+        assert_eq!(out.pod_statements[0], vec![0, 1]);
     }
 
     #[test]
@@ -1168,8 +1239,9 @@ mod tests {
         // `max_input_pods` can't force a split, so the only constraint
         // that drives K > 1 is the combined import cap.
         use super::super::cost::OperationCost;
-        let params = Params::default();
+        let mut params = Params::default();
         let n = params.max_open_input_statement_ops + 1;
+        params.max_statements = n;
         let input = InputShape {
             costs: (0..n).map(|_| OperationCost::default()).collect(),
             dep_edges: (0..n)
@@ -1185,6 +1257,7 @@ mod tests {
             statement_pod: vec![0; n],
             params,
         };
+        assert_eq!(resource_lower_bound_k(&input), 2);
         let out = partition(&input).expect("should partition");
         assert!(
             out.pod_count >= 2,
@@ -1373,10 +1446,8 @@ mod tests {
 
     #[test]
     fn dependency_chain_respects_topo_order() {
-        // 4 statements where each depends on the previous. With
-        // max_statements = 3, a 2-POD partition is feasible: one POD
-        // holds [0,1] (2 stmts, 0 imports) and the other [2,3] (2
-        // stmts + 1 chain import of stmt 1 = 3 stmts at cap).
+        // Four statements, each depending on its predecessor. [0, 1] and [2, 3] form a valid
+        // two-POD partition; the second POD imports statement 1 through its input statement region.
         use super::super::cost::OperationCost;
         let params = Params {
             max_statements: 3,

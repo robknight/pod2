@@ -273,19 +273,36 @@ impl MainPodBuilder {
         }
     }
 
-    pub fn insert(&mut self, public: bool, st_op: (Statement, Operation)) -> Result<()> {
-        let new_len = self.statements.len() + 1;
-        if new_len > self.params.max_statements {
+    // Imports have a separate capacity limit for input statement rows.
+    fn check_statement_capacity(&self, operations: &[Operation], op: &Operation) -> Result<()> {
+        let num_imports = operations
+            .iter()
+            .chain(std::iter::once(op))
+            .filter(|op| op.is_open_input_statement())
+            .count();
+        let num_locals = operations.len() + 1 - num_imports;
+        if num_imports > self.params.max_open_input_statement_ops {
+            return Err(Error::too_many_input_statements(
+                num_imports,
+                self.params.max_open_input_statement_ops,
+            ));
+        }
+        if num_locals > self.params.max_statements {
             return Err(Error::too_many_statements(
-                new_len,
+                num_locals,
                 self.params.max_statements,
             ));
         }
+        Ok(())
+    }
+
+    pub fn insert(&mut self, public: bool, st_op: (Statement, Operation)) -> Result<()> {
+        let (st, op) = st_op;
+        self.check_statement_capacity(&self.operations, &op)?;
         self.validate_public_statement_count(
             self.new_public_statement_count() + usize::from(public),
             self.extend_input_pod0_public_statements,
         )?;
-        let (st, op) = st_op;
         self.track_contains(&st);
 
         self.statements.push((public, st));
@@ -875,13 +892,7 @@ impl MainPodBuilder {
                 *public0 = true;
             }
         } else {
-            let new_len = plan.statements.len() + 1;
-            if new_len > self.params.max_statements {
-                return Err(Error::too_many_statements(
-                    new_len,
-                    self.params.max_statements,
-                ));
-            }
+            self.check_statement_capacity(&plan.operations, &op)?;
             Self::track_contains_in(&mut plan.contains, &st);
             plan.statements.push((public, st.clone()));
             plan.operations.push(op);
@@ -931,17 +942,7 @@ impl MainPodBuilder {
             vd_set: self.vd_set.clone(),
         };
         let pod = prover.prove(&self.params, inputs)?;
-
-        let mut public_statements = if self.extend_input_pod0_public_statements {
-            self.input_pods[0].public_statements.clone()
-        } else {
-            Vec::new()
-        };
-        public_statements.extend(
-            statements
-                .into_iter()
-                .filter_map(|(public, st)| public.then_some(st)),
-        );
+        let public_statements = pod.pub_statements();
 
         Ok(MainPod {
             pod,
@@ -955,6 +956,8 @@ impl MainPodBuilder {
 #[serde(try_from = "SerializedMainPod", into = "SerializedMainPod")]
 pub struct MainPod {
     pub pod: Box<dyn middleware::Pod>,
+    /// In the order of the POD's public statements tree, which `op_input_st` indexes into:
+    /// statements inherited from input POD 0, then imports, then statements deduced in this POD.
     pub public_statements: Vec<Statement>,
     pub params: Params,
 }
@@ -1002,7 +1005,16 @@ impl MainPodCompiler {
     fn push_st_op(&mut self, public: bool, st: Statement, op: middleware::Operation) {
         self.statements.push((public, st));
         self.operations.push(op);
-        if self.statements.len() > self.params.max_statements {
+        // Imports have a separate capacity limit for input statement rows.
+        let num_imports = self
+            .operations
+            .iter()
+            .filter(|op| op.is_open_input_statement())
+            .count();
+        if num_imports > self.params.max_open_input_statement_ops {
+            panic!("too many open input statement operations");
+        }
+        if self.statements.len() - num_imports > self.params.max_statements {
             panic!("too many statements");
         }
     }
@@ -1334,6 +1346,42 @@ pub mod tests {
     }
 
     #[test]
+    fn public_statement_order_preserves_import_leaf_indices() {
+        let params = Params::default();
+        let mut source = MainPodBuilder::new(&params, &MOCK_VD_SET);
+        let imported = source.pub_op(Operation::lt(1, 2)).unwrap();
+        let source = source.prove(&MockProver {}).unwrap();
+
+        let mut builder = MainPodBuilder::new(&params, &MOCK_VD_SET);
+        builder.add_pod(source).unwrap();
+        let local = builder.pub_op(Operation::eq(42, 42)).unwrap();
+        builder.open_input_st(true, 0, &imported).unwrap();
+        let pod = builder.prove(&MockProver {}).unwrap();
+        pod.pod.verify().unwrap();
+        assert_eq!(pod.public_statements, pod.pod.pub_statements());
+        assert_eq!(pod.public_statements, vec![imported.clone(), local.clone()]);
+
+        let restored: MainPod =
+            serde_json::from_value(serde_json::to_value(&pod).unwrap()).unwrap();
+        assert_eq!(restored.public_statements, pod.public_statements);
+        restored.pod.verify().unwrap();
+
+        // Open in the opposite order to the source's leaf order, including after serialization.
+        for input in [pod, restored] {
+            let mut consumer = MainPodBuilder::new(&params, &MOCK_VD_SET);
+            consumer.add_pod(input).unwrap();
+            consumer.open_input_st(true, 0, &local).unwrap();
+            consumer.open_input_st(true, 0, &imported).unwrap();
+            let output = consumer.prove(&MockProver {}).unwrap();
+            output.pod.verify().unwrap();
+            assert_eq!(
+                output.public_statements,
+                vec![local.clone(), imported.clone()]
+            );
+        }
+    }
+
+    #[test]
     fn missing_signed_dict_entry_returns_none() -> Result<()> {
         let signed =
             SignedDictBuilder::new(&Params::default()).sign(&Signer(SecretKey(1u32.into())))?;
@@ -1459,6 +1507,67 @@ pub mod tests {
     }
 
     #[test]
+    fn public_input_statement_limits_preserve_builder() {
+        let dict = dict!({"balance" => 10});
+        let mut input_builder = MainPodBuilder::new(&Params::default(), &MOCK_VD_SET);
+        let imported = input_builder
+            .pub_op(Operation::dict_contains(dict.clone(), "balance", 10))
+            .unwrap();
+        let input_pod = input_builder.prove(&MockProver {}).unwrap();
+        let params = Params {
+            max_statements: 2,
+            max_open_input_statement_ops: 1,
+            max_public_statements: 1,
+            ..Params::default()
+        };
+        let mut builder = MainPodBuilder::new(&params, &MOCK_VD_SET);
+        builder.add_pod(input_pod).unwrap();
+        builder.pub_op(Operation::eq(1, 1)).unwrap();
+        let statements = builder.statements.clone();
+        let operations = builder.operations.clone();
+        let contains = builder.contains.clone();
+
+        // Publication failure must discard the generated import as well as the local deduction.
+        let error = builder
+            .pub_op(Operation::eq(entry(&dict, "balance").unwrap(), 10))
+            .expect_err("the publication limit is full even though both regions have space");
+        assert!(matches!(
+            error,
+            Error::Inner { inner, .. }
+                if matches!(*inner, InnerError::TooManyPublicStatements(2, 1))
+        ));
+        let import_op = builder.op_input_st(0, 0).unwrap();
+        let error = builder
+            .insert(true, (imported.clone(), import_op.clone()))
+            .expect_err("input statements share the publication limit with local statements");
+        assert!(matches!(
+            error,
+            Error::Inner { inner, .. }
+                if matches!(*inner, InnerError::TooManyPublicStatements(2, 1))
+        ));
+        assert_eq!(builder.statements, statements);
+        assert_eq!(builder.operations, operations);
+        assert_eq!(builder.contains, contains);
+
+        builder
+            .insert(false, (imported.clone(), import_op))
+            .unwrap();
+        let statements = builder.statements.clone();
+        let operations = builder.operations.clone();
+        let contains = builder.contains.clone();
+        builder
+            .open_input_st(true, 0, &imported)
+            .expect_err("the existing private input statement cannot be promoted");
+        builder
+            .reveal(&imported)
+            .expect_err("the existing private input statement cannot be revealed");
+        assert_eq!(builder.statements, statements);
+        assert_eq!(builder.operations, operations);
+        assert_eq!(builder.contains, contains);
+        builder.prove(&MockProver {}).unwrap().pod.verify().unwrap();
+    }
+
+    #[test]
     fn inherited_public_statements_do_not_use_per_pod_allowance() {
         let mut input_builder = MainPodBuilder::new(&Params::default(), &MOCK_VD_SET);
         input_builder.pub_op(Operation::eq(10, 10)).unwrap();
@@ -1478,6 +1587,107 @@ pub mod tests {
 
         let pod = builder.prove(&MockProver {}).unwrap();
         assert_eq!(pod.public_statements.len(), 3);
+    }
+
+    #[test]
+    fn input_statement_row_limits_preserve_insert_state() {
+        let params = Params {
+            max_statements: 1,
+            max_open_input_statement_ops: 1,
+            ..Params::default()
+        };
+        let mut input_builder = MainPodBuilder::new(&Params::default(), &MOCK_VD_SET);
+        let imported = input_builder.pub_op(Operation::lt(1, 2)).unwrap();
+        let excess_import = input_builder.pub_op(Operation::lt(2, 3)).unwrap();
+        let input_pod = input_builder.prove(&MockProver {}).unwrap();
+        let mut builder = MainPodBuilder::new(&params, &MOCK_VD_SET);
+        builder.add_pod(input_pod).unwrap();
+        builder
+            .insert(true, (Statement::equal(3, 3), Operation::eq(3, 3)))
+            .unwrap();
+        let import_op = builder.op_input_st(0, 0).unwrap();
+        builder.insert(true, (imported, import_op)).unwrap();
+        let statements = builder.statements.clone();
+        let operations = builder.operations.clone();
+        let contains = builder.contains.clone();
+
+        let import_op = builder.op_input_st(0, 1).unwrap();
+        let error = builder
+            .insert(false, (excess_import, import_op))
+            .expect_err("the input statement region is full");
+        assert!(error.to_string().contains("input statement limit is 1"));
+        assert!(matches!(
+            error,
+            Error::Inner { inner, .. }
+                if matches!(*inner, InnerError::TooManyInputStatements(2, 1))
+        ));
+        let error = builder
+            .insert(false, (Statement::equal(4, 4), Operation::eq(4, 4)))
+            .expect_err("the universal statement region is full");
+        assert!(matches!(
+            error,
+            Error::Inner { inner, .. }
+                if matches!(*inner, InnerError::TooManyStatements(2, 1))
+        ));
+
+        assert_eq!(builder.statements, statements);
+        assert_eq!(builder.operations, operations);
+        assert_eq!(builder.contains, contains);
+        builder.prove(&MockProver {}).unwrap().pod.verify().unwrap();
+    }
+
+    #[test]
+    fn input_statement_row_limits_preserve_operation_plan() {
+        let params = Params {
+            max_statements: 1,
+            max_open_input_statement_ops: 2,
+            ..Params::default()
+        };
+        let mut input_builder = MainPodBuilder::new(&Params::default(), &MOCK_VD_SET);
+        let dict = dict!({"a" => 1, "b" => 2, "c" => 3});
+        input_builder
+            .pub_op(Operation::dict_contains(dict.clone(), "a", 1))
+            .unwrap();
+        let second_import = input_builder
+            .pub_op(Operation::dict_contains(dict.clone(), "b", 2))
+            .unwrap();
+        let third_import = input_builder
+            .pub_op(Operation::dict_contains(dict.clone(), "c", 3))
+            .unwrap();
+        let input_pod = input_builder.prove(&MockProver {}).unwrap();
+        let mut builder = MainPodBuilder::new(&params, &MOCK_VD_SET);
+        builder.add_pod(input_pod).unwrap();
+        builder
+            .pub_op(Operation::eq(entry(&dict, "a").unwrap(), 1))
+            .unwrap();
+        let statements = builder.statements.clone();
+        let operations = builder.operations.clone();
+        let contains = builder.contains.clone();
+
+        // The generated import must also be discarded when its dependent local statement fails.
+        builder
+            .pub_op(Operation::eq(entry(&dict, "b").unwrap(), 2))
+            .expect_err("the universal statement region is full");
+        assert_eq!(builder.statements, statements);
+        assert_eq!(builder.operations, operations);
+        assert_eq!(builder.contains, contains);
+
+        builder.open_input_st(true, 0, &second_import).unwrap();
+        let statements = builder.statements.clone();
+        let operations = builder.operations.clone();
+        let contains = builder.contains.clone();
+        let error = builder
+            .open_input_st(true, 0, &third_import)
+            .expect_err("the input statement region is full");
+        assert!(matches!(
+            error,
+            Error::Inner { inner, .. }
+                if matches!(*inner, InnerError::TooManyInputStatements(3, 2))
+        ));
+        assert_eq!(builder.statements, statements);
+        assert_eq!(builder.operations, operations);
+        assert_eq!(builder.contains, contains);
+        builder.prove(&MockProver {}).unwrap().pod.verify().unwrap();
     }
 
     #[test]

@@ -17,8 +17,8 @@ use std::{
 use crate::{
     frontend::{MainPod, MainPodBuilder, Operation},
     middleware::{
-        InputPodOpenStatement, MainPodProver, NativeOperation, OperationAux, OperationType, Params,
-        Statement, VDSet, Value, BASE_PARAMS,
+        InputPodOpenStatement, MainPodProver, OperationAux, Params, Statement, VDSet, Value,
+        BASE_PARAMS,
     },
 };
 
@@ -267,13 +267,7 @@ impl MultiPodBuilder {
     /// Pre-solve resource summary. Aggregates per-statement costs against
     /// per-POD limits and identifies the bottleneck resource.
     pub fn resource_summary(&self) -> ResourceSummary {
-        let costs: Vec<OperationCost> = self
-            .builder
-            .operations
-            .iter()
-            .map(|op| OperationCost::from_operation(op, &self.params))
-            .collect();
-        ResourceSummary::from_costs(costs.iter(), &self.params)
+        ResourceSummary::from_input(&self.input_shape())
     }
 
     /// Solve the partitioning problem with the production heuristic.
@@ -444,9 +438,7 @@ impl SolvedMultiPod {
                 continue;
             }
             let public = !is_output && public_set.contains(&s);
-            if let OperationType::Native(NativeOperation::OpenInputStatement) =
-                &self.operations[s].0
-            {
+            if self.operations[s].is_open_input_statement() {
                 // Staging-time aux carries a `pod_index` from the staging
                 // builder's input slots; re-issue against this POD's
                 // ext_slot mapping.
@@ -788,7 +780,8 @@ fn build_shape_and_index(
     }
     let n_synth = synthetic_to_statement.len();
 
-    // Augmented costs: originals + zero costs for synthetics.
+    // Synthetic republishes are openings, so they use input statement rows rather than universal
+    // slots.
     let mut costs: Vec<OperationCost> = operations
         .iter()
         .map(|op| OperationCost::from_operation(op, params))
@@ -1045,7 +1038,11 @@ mod tests {
         // against the per-POD builder's slot.
         use crate::lang::load_module;
 
-        let params = Params::default();
+        let params = Params {
+            max_statements: 1,
+            max_open_input_statement_ops: 1,
+            ..Params::default()
+        };
         let vd_set = &*MOCK_VD_SET;
         let prover = MockProver {};
 
@@ -1072,6 +1069,7 @@ mod tests {
             .expect("pred_a on ext stmt");
 
         let solved = builder.solve().expect("should solve");
+        assert_eq!(solved.solution().pod_count, 1);
         let result = solved.prove(&prover).expect("prove should succeed");
         assert!(!result.pods.is_empty());
         for (i, pod) in result.pods.iter().enumerate() {
@@ -1203,12 +1201,8 @@ mod tests {
                     );
                 }
 
-                // Probe whether the DP layer beats greedy on bin-packing's
-                // ordering. Under dynamic export tracking, bin-packing
-                // builds segments large enough that greedy cuts can no
-                // longer hit the DP's optimum on this ordering: greedy
-                // returns K=14, DP returns K=13. Pinned so any future
-                // shift back to parity is visible.
+                // Imports use input statement rows rather than universal slots, so greedy cuts reach
+                // the DP optimum on this ordering (K=13). Pin both results to catch regressions.
                 let identity: Vec<usize> = (0..shape.num_statements()).collect();
                 let bp_ordering =
                     partition::kahn_bin_packing(&shape, &identity).expect("DAG must be acyclic");
@@ -1225,7 +1219,7 @@ mod tests {
                     k_dp <= k_greedy,
                     "DP must be at least as good as greedy on a fixed ordering"
                 );
-                assert_eq!(k_greedy, 14, "greedy on bin-packing's ordering pins at 14");
+                assert_eq!(k_greedy, 13, "greedy on bin-packing's ordering pins at 13");
                 assert_eq!(k_dp, 13, "DP on bin-packing's ordering pins at 13");
 
                 // Probe the DFS-from-sinks ordering's K directly.
