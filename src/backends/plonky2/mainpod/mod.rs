@@ -707,6 +707,22 @@ impl MainPodProver for Prover {
     }
 }
 
+/// Builds and caches what MainPod proofs with `params` and `vd_set` need, so
+/// that the first proof in a process takes about as long as later ones: the
+/// recursive MainPod circuit and the EmptyPod that pads unused input slots
+/// (proved here if it is not cached yet). With `disk_cache` both persist for
+/// later processes, which then only load them. Takes several seconds when
+/// nothing is cached; applications can call it at startup or in the
+/// background.
+pub fn prepare(params: &Params, vd_set: &VDSet) -> Result<()> {
+    let _ = cache_get_rec_main_pod_circuit_data(params);
+    let _ = cache_get_rec_main_pod_common_hash(params);
+    if params.max_input_pods > 0 {
+        let _ = EmptyPod::new_boxed(vd_set.clone());
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MainPod {
     params: Params,
