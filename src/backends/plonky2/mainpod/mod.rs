@@ -738,17 +738,40 @@ impl MainPodProver for Prover {
 
 /// Builds and caches what MainPod proofs with `params` and `vd_set` need, so
 /// that the first proof in a process takes about as long as later ones: the
-/// recursive MainPod circuit and the EmptyPod that pads unused input slots
-/// (proved here if it is not cached yet). With `disk_cache` both persist for
-/// later processes, which then only load them. Takes several seconds when
-/// nothing is cached; applications can call it at startup or in the
-/// background.
+/// recursive MainPod circuit, the EmptyPod that pads unused input slots and,
+/// with the `witness_executor` feature, the MainPod circuit's witness program,
+/// compiled without proving (see `backends::plonky2::witness_program`). With
+/// `disk_cache` all of these persist for later processes, which then only
+/// load them. Takes several seconds when nothing is cached. As in a proof, a
+/// witness program that cannot be compiled or loaded is logged and leaves
+/// proofs on the worklist.
 pub fn prepare(params: &Params, vd_set: &VDSet) -> Result<()> {
-    let _ = cache_get_rec_main_pod_circuit_data(params);
-    let _ = cache_get_rec_main_pod_common_hash(params);
-    if params.max_input_pods > 0 {
-        let _ = EmptyPod::new_boxed(vd_set.clone());
+    let inputs = Prover::proof_inputs(
+        params,
+        MainPodInputs {
+            pods: &[],
+            extend_pod0_pub_statements: false,
+            statements: &[],
+            operations: &[],
+            vd_set: vd_set.clone(),
+        },
+    )?;
+    let (_main_pod_target, circuit_data) = &*cache_get_rec_main_pod_circuit_data(params);
+    // Every MainPod proof sets the same targets, so an empty one's inputs
+    // compile the program real proofs use.
+    #[cfg(feature = "witness_executor")]
+    {
+        let pw = crate::backends::plonky2::recursion::circuit::rec_circuit_partial_witness(
+            _main_pod_target,
+            &inputs.input,
+            inputs.proofs,
+            inputs.verifier_datas,
+        )?;
+        let circuit_data: &CircuitData = circuit_data;
+        crate::backends::plonky2::witness_program::ensure_installed(circuit_data, &pw);
     }
+    #[cfg(not(feature = "witness_executor"))]
+    let _ = (inputs, circuit_data);
     Ok(())
 }
 
@@ -1058,6 +1081,27 @@ pub mod tests {
         assert!(builder.prove(&capture).is_err());
         let pw = capture.0.lock().unwrap().take().expect("inputs captured");
         Ok(pw)
+    }
+
+    /// `prepare` compiles, without proving, the witness program a MainPod
+    /// proof with statements and operations would compile from its inputs.
+    #[cfg(feature = "witness_executor")]
+    #[test]
+    fn test_prepare_compiles_the_proof_program() -> frontend::Result<()> {
+        let params = Params::default();
+        let vd_set = &*DEFAULT_VD_SET;
+        prepare(&params, vd_set)?;
+        let (_, circuit_data) = &*cache_get_rec_main_pod_circuit_data(&params);
+        let prepared = circuit_data
+            .witness_program()
+            .expect("prepare installs a program");
+
+        let pw = zu_kyc_rec_circuit_inputs(&params, vd_set)?;
+        let program = circuit_data
+            .compile_witness_program_like(&pw)
+            .expect("compile");
+        assert!(program.to_bytes() == prepared.to_bytes());
+        Ok(())
     }
 
     /// The compiled witness executor computes exactly the worklist's witness

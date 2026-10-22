@@ -21,7 +21,9 @@
 //! stored, keyed by circuit digest and plonky2's witness program `FORMAT`, and
 //! later processes load them; plonky2 checks the circuit, format and
 //! generators' operations when loading. Programs are kept per process by
-//! circuit digest.
+//! circuit digest. `mainpod::prepare` does this for the MainPod circuit before
+//! any proof, from an empty MainPod's inputs, since every MainPod proof sets
+//! the same targets.
 //!
 //! A circuit plonky2 cannot compile (lookup tables, or a generator without an
 //! operation description) keeps the worklist. Proofs never fail because of this
