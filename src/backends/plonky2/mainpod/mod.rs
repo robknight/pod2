@@ -1026,6 +1026,58 @@ pub mod tests {
         Ok(pod.verify()?)
     }
 
+    /// The inputs a zu-kyc MainPod proof gives the recursive MainPod circuit,
+    /// captured without proving.
+    #[cfg(feature = "witness_executor")]
+    fn zu_kyc_rec_circuit_inputs(
+        params: &Params,
+        vd_set: &VDSet,
+    ) -> frontend::Result<plonky2::iop::witness::PartialWitness<F>> {
+        /// Captures a proof's inputs to the recursive circuit, then stops.
+        struct Capture(std::sync::Mutex<Option<plonky2::iop::witness::PartialWitness<F>>>);
+        impl MainPodProver for Capture {
+            fn prove(&self, params: &Params, inputs: MainPodInputs) -> Result<Box<dyn Pod>> {
+                let inputs = Prover::proof_inputs(params, inputs)?;
+                let (target, _) = &*cache_get_rec_main_pod_circuit_data(params);
+                let pw = crate::backends::plonky2::recursion::circuit::rec_circuit_partial_witness(
+                    target,
+                    &inputs.input,
+                    inputs.proofs,
+                    inputs.verifier_datas,
+                )?;
+                *self.0.lock().unwrap() = Some(pw);
+                Err(Error::custom("inputs captured"))
+            }
+        }
+
+        let (gov_id_builder, pay_stub_builder) = zu_kyc_sign_dict_builders(params);
+        let gov_id = gov_id_builder.sign(&Signer(SecretKey(BigUint::one())))?;
+        let pay_stub = pay_stub_builder.sign(&Signer(SecretKey(2u64.into())))?;
+        let builder = zu_kyc_pod_builder(params, vd_set, &gov_id, &pay_stub)?;
+        let capture = Capture(Default::default());
+        assert!(builder.prove(&capture).is_err());
+        let pw = capture.0.lock().unwrap().take().expect("inputs captured");
+        Ok(pw)
+    }
+
+    /// The compiled witness executor computes exactly the worklist's witness
+    /// for a MainPod proof, which checks the typed operations pod2's
+    /// generators describe (`witness_operation`).
+    #[cfg(feature = "witness_executor")]
+    #[test]
+    fn test_executor_matches_worklist() -> frontend::Result<()> {
+        let params = Params::default();
+        let pw = zu_kyc_rec_circuit_inputs(&params, &DEFAULT_VD_SET)?;
+        let (_, circuit_data) = &*cache_get_rec_main_pod_circuit_data(&params);
+        plonky2::plonk::witness_program::check_against_worklist(
+            &pw,
+            &circuit_data.prover_only,
+            &circuit_data.common,
+        )
+        .expect("the executor matches the worklist");
+        Ok(())
+    }
+
     // `RUST_LOG=pod2::backends=debug cargo test --release --no-default-features --features=backend_plonky2,mem_cache,zk,metrics test_measure_main_pod -- --nocapture --ignored`
     #[ignore]
     #[test]

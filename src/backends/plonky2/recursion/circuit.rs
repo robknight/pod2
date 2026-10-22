@@ -216,6 +216,8 @@ impl<I: InnerCircuit> RecursiveCircuit<I> {
             proofs,
             verifier_datas,
         )?;
+        #[cfg(feature = "witness_executor")]
+        crate::backends::plonky2::witness_program::ensure_installed(&self.prover, &pw);
         Ok(self.prover.prove(pw)?)
     }
 

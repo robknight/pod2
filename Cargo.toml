@@ -100,6 +100,11 @@ time = ["dep:env_logger"]
 examples = []
 disk_cache = ["dep:directories", "dep:minicbor-serde", "dep:vergen-gitcl"]
 mem_cache = []
+# Generate witnesses with plonky2's compiled witness executor instead of its
+# worklist: each circuit's program is compiled on its first proof in a
+# process (stored and loaded across processes with `disk_cache`). Faster from
+# about the tenth proof of a circuit on; see `backends::plonky2::witness_program`.
+witness_executor = []
 db_rocksdb = ["dep:rocksdb"]
 # Compile the MILP partitioner into the lib. Off by default to keep the SCIP
 # dependency out of slim builds; on for the test target unconditionally via
