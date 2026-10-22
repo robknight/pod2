@@ -541,8 +541,22 @@ pub(crate) fn process_statements_operations(
 
 pub struct Prover {}
 
-impl MainPodProver for Prover {
-    fn prove(&self, params: &Params, inputs: MainPodInputs) -> Result<Box<dyn Pod>> {
+/// What a MainPod proof feeds the recursive circuit, and what the pod records
+/// besides the proof.
+struct ProofInputs {
+    input: MainPodVerifyInput,
+    proofs: Vec<ProofWithPublicInputs>,
+    verifier_datas: Vec<VerifierOnlyCircuitData>,
+    common_hash: String,
+    public_statements: Vec<Statement>,
+    public_statements_mt: Array,
+    vd_set: VDSet,
+}
+
+impl Prover {
+    /// Lays out `inputs` for the recursive MainPod circuit, padding the input pods
+    /// with empty pods (proving the EmptyPod on its first use).
+    fn proof_inputs(params: &Params, inputs: MainPodInputs) -> Result<ProofInputs> {
         assert_eq!(inputs.statements.len(), inputs.operations.len());
         // Pad input recursive pods with empty pods if necessary
         let empty_pod = if inputs.pods.len() == params.max_input_pods {
@@ -683,25 +697,40 @@ impl MainPodProver for Prover {
             aux_table_input,
         };
 
+        Ok(ProofInputs {
+            input,
+            proofs,
+            verifier_datas,
+            common_hash,
+            public_statements: pub_sts,
+            public_statements_mt: pub_sts_mt,
+            vd_set: inputs.vd_set,
+        })
+    }
+}
+
+impl MainPodProver for Prover {
+    fn prove(&self, params: &Params, inputs: MainPodInputs) -> Result<Box<dyn Pod>> {
+        let inputs = Prover::proof_inputs(params, inputs)?;
         let (main_pod_target, circuit_data) = &*cache_get_rec_main_pod_circuit_data(params);
         let proof_with_pis = timed!(
             "MainPod::prove",
             prove_rec_circuit(
                 main_pod_target,
                 circuit_data,
-                &input,
-                proofs,
-                verifier_datas
+                &inputs.input,
+                inputs.proofs,
+                inputs.verifier_datas
             )?
         );
 
         Ok(Box::new(MainPod {
             params: params.clone(),
             verifier_only: circuit_data.verifier_only.clone(),
-            common_hash,
+            common_hash: inputs.common_hash,
             vd_set: inputs.vd_set,
-            public_statements: pub_sts,
-            public_statements_mt: pub_sts_mt,
+            public_statements: inputs.public_statements,
+            public_statements_mt: inputs.public_statements_mt,
             proof: proof_with_pis.proof,
         }))
     }
