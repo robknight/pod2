@@ -376,6 +376,63 @@ fn test_operation_verify_eq() -> Result<()> {
 }
 
 #[test]
+fn test_operation_verify_rejects_zero_key_reference() -> Result<()> {
+    let message = Value::from("foo");
+    let tree = MerkleTree::new(&[(EMPTY_VALUE, message.raw())].into());
+    let root = tree.root();
+    assert_ne!(RawValue::from(root), message.raw());
+    let contains: mainpod::Statement =
+        Statement::contains(root, EMPTY_VALUE, message.clone()).into();
+
+    // Membership at the zero key is legitimate; interpreting it as an anchored key is not.
+    let (value, proof) = tree.prove(&EMPTY_VALUE)?;
+    operation_verify(
+        contains.clone(),
+        mainpod::Operation(
+            OperationType::Native(NativeOperation::ContainsFromEntries),
+            vec![OperationArg::None; 3],
+            OperationAux::MerkleProofIndex(Size::Medium, 0),
+        ),
+        vec![Statement::None.into()],
+        Aux::merkle_proof(MerkleClaimAndProof::new(
+            root,
+            EMPTY_VALUE,
+            Some(value),
+            proof,
+        )),
+    )?;
+
+    // A zero-key reference cannot masquerade as a literal or as a different, nonzero key.
+    for (st, args) in [
+        (
+            Statement::equal(root, message.clone()),
+            vec![OperationArg::Index(1), OperationArg::None],
+        ),
+        (
+            Statement::equal(message.clone(), root),
+            vec![OperationArg::None, OperationArg::Index(1)],
+        ),
+        (
+            Statement::equal(AnchoredKey::new(root, Key::from("forged")), message),
+            vec![OperationArg::Index(1), OperationArg::None],
+        ),
+    ] {
+        assert!(operation_verify(
+            st.into(),
+            mainpod::Operation(
+                OperationType::Native(NativeOperation::EqualFromEntries),
+                args,
+                OperationAux::None,
+            ),
+            vec![Statement::None.into(), contains.clone()],
+            Aux::default(),
+        )
+        .is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn test_operation_verify_neq() -> Result<()> {
     let dict1 = dict!({"hello" => 55});
     let dict2 = dict!({"world" => 75});
@@ -1092,6 +1149,37 @@ fn test_operation_replace_value_with_entry() -> Result<()> {
 
     let prev_statements = vec![Statement::None.into(), st_in, st_entry];
     operation_verify(st_out, op, prev_statements, Aux::default())
+}
+
+#[test]
+fn test_operation_replace_value_with_entry_rejects_zero_key() {
+    let message = Value::from("foo");
+    let tree = MerkleTree::new(&[(EMPTY_VALUE, message.raw())].into());
+    let root = tree.root();
+    let st_in = Statement::equal(message.clone(), message.clone()).into();
+    let st_entry = Statement::contains(root, EMPTY_VALUE, message.clone()).into();
+    let mut op_args = vec![OperationArg::None; BASE_PARAMS.max_statement_args + 1];
+    op_args[0] = OperationArg::Index(2);
+    op_args[BASE_PARAMS.max_statement_args] = OperationArg::Index(1);
+    let op = mainpod::Operation(
+        OperationType::Native(NativeOperation::ReplaceValueWithEntry),
+        op_args,
+        OperationAux::None,
+    );
+
+    let prev_statements = vec![Statement::None.into(), st_in, st_entry];
+    for st_out in [
+        Statement::equal(root, message.clone()),
+        Statement::equal(AnchoredKey::new(root, Key::from("forged")), message),
+    ] {
+        assert!(operation_verify(
+            st_out.into(),
+            op.clone(),
+            prev_statements.clone(),
+            Aux::default(),
+        )
+        .is_err());
+    }
 }
 
 #[test]

@@ -146,7 +146,10 @@ impl<const MAX_EQS: usize> StatementCache<MAX_EQS> {
             let ref_is_value = builder.and(ref_is_value_arg[0], ref_is_value_arg[1]);
             let ref_is_value = builder.and(ref_is_value, ref_is_value_arg[2]);
 
-            let is_reference = builder.and(pred_is_contains, ref_is_value);
+            // Every reference consumer binds this output argument to Contains(root, key).
+            // Reuse its type check to require a nonzero key without comparing the key twice.
+            let key_is_nonempty = builder.not(arg_is_value);
+            let is_reference = builder.all([pred_is_contains, ref_is_value, key_is_nonempty]);
             let valid = builder.or(is_literal, is_reference);
             let rhs_from_literal = st.args[i].as_value();
             let rhs_from_reference = op_args[i].args[2].as_value();
@@ -216,7 +219,7 @@ impl<const MAX_EQS: usize> StatementCache<MAX_EQS> {
     /// If the operation argument is a statement of type  `None`, then the value
     /// should be the corresponding argument of the current statement.
     /// If the operation argument is a statement of type `Contains`, then the value
-    /// should be the argument at index 1 of that statement.
+    /// should be the argument at index 2 of that statement, and its key must be nonzero.
     /// If the function successfully interprets the arguments as values,
     /// returns `True` along with those values.  Otherwise, returns `False`
     /// along with some arbitrary values.
