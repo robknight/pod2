@@ -736,15 +736,12 @@ impl MainPodProver for Prover {
     }
 }
 
-/// Builds and caches what MainPod proofs with `params` and `vd_set` need, so
-/// that the first proof in a process takes about as long as later ones: the
-/// recursive MainPod circuit, the EmptyPod that pads unused input slots and,
-/// with the `witness_executor` feature, the MainPod circuit's witness program,
-/// compiled without proving (see `backends::plonky2::witness_program`). With
-/// `disk_cache` all of these persist for later processes, which then only
-/// load them. Takes several seconds when nothing is cached. As in a proof, a
-/// witness program that cannot be compiled or loaded is logged and leaves
-/// proofs on the worklist.
+/// Prepares circuits, the padding EmptyPod and (with `witness_executor`) the
+/// compiled witness executor before accepting proof requests. POD2's
+/// `disk_cache` persists circuit data and padding proofs. Executor persistence
+/// is separately controlled by `PLONKY2_EXECUTOR_CACHE_DIR` and owned by plonky2.
+/// Unsupported generators use the worklist by default; strict witness fallback
+/// and invalid configuration/preparation are returned as errors.
 pub fn prepare(params: &Params, vd_set: &VDSet) -> Result<()> {
     let inputs = Prover::proof_inputs(
         params,
@@ -768,7 +765,7 @@ pub fn prepare(params: &Params, vd_set: &VDSet) -> Result<()> {
             inputs.verifier_datas,
         )?;
         let circuit_data: &CircuitData = circuit_data;
-        crate::backends::plonky2::witness_program::ensure_installed(circuit_data, &pw);
+        crate::backends::plonky2::witness_program::ensure_installed(circuit_data, &pw)?;
     }
     #[cfg(not(feature = "witness_executor"))]
     let _ = (inputs, circuit_data);

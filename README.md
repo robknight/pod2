@@ -9,11 +9,19 @@
 pod2 uses the GPU fork of plonky2 ([robknight/plonky2](https://github.com/robknight/plonky2/tree/gpu)), which adds GPU proving through wgpu without changing proofs, circuit data or the verifier (see its [docs/gpu.md](https://github.com/robknight/plonky2/blob/gpu/docs/gpu.md)). With the `gpu` feature, proofs run on a GPU when one is usable (Metal, Vulkan or DirectX 12, chosen at run time) and on the CPU otherwise; configure it with `plonky2::gpu::configure` before the first proof if the defaults do not suit, for example for several concurrent proofs. `gpu-profiling` adds plonky2's GPU diagnostics.
 
 ## Faster witness generation
-With `witness_executor`, witnesses are generated with plonky2's compiled witness executor instead of its worklist, two to three times faster; this needs the fork of plonky2-u32 ([robknight/plonky2-u32](https://github.com/robknight/plonky2-u32/tree/gpu)) as well. Each circuit's program is compiled on its first proof in a process (about 0.4 s for MainPod on an Apple M4), so this suits processes that prove many times; with `disk_cache` the programs are stored and later processes load them.
+With `witness_executor`, POD2 prepares plonky2's compiled witness executor for each circuit before its first proof. The measured fast defaults apply automatically. The plonky2-u32 fork must describe its comparison generator's witness operation; unsupported circuits use the ordinary worklist by default.
 
-`backends::plonky2::mainpod::prepare(&params, &vd_set)` builds and caches everything MainPod proofs need (circuits, the padding EmptyPod and, with `witness_executor`, the witness program), so an application can pay those costs at startup instead of on its first proof.
+Set `PLONKY2_EXECUTOR_CACHE_DIR` to enable compiled-executor caching across processes. plonky2 owns identity, validation, loading, compilation, atomic replacement and concurrent preparation. This does not require POD2's `disk_cache` feature. That separate feature still caches POD2 circuit data and padding proofs.
 
-`cargo run --release --features gpu,witness_executor --example mainpod_prove -- --prepare --proofs 4` proves and times MainPods (`--help` for options).
+`backends::plonky2::mainpod::prepare(&params, &vd_set)` prepares the circuit, padding proof and witness executor before accepting proof requests. Host executor tables are initialized before it returns. Measure total preparation and first-proof time as well as warm proof time.
+
+Applications can use documented `PLONKY2_EXECUTOR_*` process defaults without forwarding backend-specific fields through POD2. For programmatic resource control, call `backends::plonky2::configure_witness_executor(WitnessConfig)` before the first preparation or proof. The relevant configuration types are re-exported there. A caller-owned Rayon pool can be shared across circuits. POD2 shares cached circuit data within a process, so configuration changes after preparation are rejected. Invalid settings and unexpected preparation errors are returned; cache I/O failures allow memory-only preparation. `WitnessFallback::Error` requires compiled execution, including rejecting unsupported circuits.
+
+```sh
+PLONKY2_EXECUTOR_CACHE_DIR=/var/cache/my-app/executors cargo run --release --features gpu,witness_executor --example mainpod_prove -- --prepare --proofs 4
+```
+
+See plonky2's `docs/witness-executor.md` for configuration, resource ownership, compatibility, custom-generator checks and the explicit preparation API.
 
 ## Book
 The `book` contains the specification of POD2. A rendered version of the site can be found at: https://0xparc.github.io/pod2/

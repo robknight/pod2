@@ -10,11 +10,14 @@ pub mod serialization;
 pub mod signer;
 #[cfg(feature = "witness_executor")]
 pub(crate) mod witness_program;
-
 use std::iter;
 
 use base64::{prelude::BASE64_STANDARD, Engine};
 pub use error::*;
+#[cfg(feature = "witness_executor")]
+pub use plonky2::plonk::witness_program::{
+    WitnessBuffers, WitnessCache, WitnessConfig, WitnessFallback,
+};
 use plonky2::{
     field::{
         extension::quadratic::QuadraticExtension,
@@ -28,6 +31,8 @@ use rand::prelude::*;
 use rand_chacha::ChaCha20Rng;
 use serde::{ser, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+#[cfg(feature = "witness_executor")]
+pub use witness_program::configure as configure_witness_executor;
 
 use crate::{
     backends::plonky2::{
@@ -57,7 +62,7 @@ pub(crate) fn prove_with_timing(
     {
         let _ = name;
         #[cfg(feature = "witness_executor")]
-        witness_program::ensure_installed(circuit_data, &pw);
+        witness_program::ensure_installed(circuit_data, &pw)?;
         circuit_data.prove(pw)
     }
     #[cfg(feature = "time")]
@@ -76,7 +81,7 @@ pub(crate) fn prove_with_timing(
             .try_init();
         });
         #[cfg(feature = "witness_executor")]
-        witness_program::ensure_installed(circuit_data, &pw);
+        witness_program::ensure_installed(circuit_data, &pw)?;
 
         let mut timing = TimingTree::new(name, log::Level::Debug);
         let proof = prove(

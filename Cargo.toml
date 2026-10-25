@@ -56,7 +56,7 @@ rocksdb = { version = "0.24.0", optional = true } # keyvalue database for merkle
 # https://github.com/ed255/plonky2/ at branch `feat/debug`, next to the pod2 repo directory), use
 # `plonky2 = { path = "../plonky2/plonky2" }` instead.
 [patch."https://github.com/0xPARC/plonky2"]
-plonky2 = { git = "https://github.com/robknight/plonky2", rev = "035c827656e00ac390cf11cb45c6df3c715b181d" }
+plonky2 = { git = "https://github.com/robknight/plonky2", rev = "224296db5ce1e39849f456c01de710c517e33f12" }
 
 # plonky2_u32 from its fork (the gpu branch of robknight/plonky2-u32), which describes its
 # comparison generator's witness operation for plonky2's compiled witness executor.
@@ -100,10 +100,8 @@ time = ["dep:env_logger"]
 examples = []
 disk_cache = ["dep:directories", "dep:minicbor-serde", "dep:vergen-gitcl"]
 mem_cache = []
-# Generate witnesses with plonky2's compiled witness executor instead of its
-# worklist: each circuit's program is compiled on its first proof in a
-# process (stored and loaded across processes with `disk_cache`). Faster from
-# about the tenth proof of a circuit on; see `backends::plonky2::witness_program`.
+# Prepare plonky2's compiled witness executor on first use or during mainpod::prepare.
+# PLONKY2_EXECUTOR_CACHE_DIR enables executor caching independently of disk_cache.
 witness_executor = []
 db_rocksdb = ["dep:rocksdb"]
 # Compile the MILP partitioner into the lib. Off by default to keep the SCIP
