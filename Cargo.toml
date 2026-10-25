@@ -56,7 +56,7 @@ rocksdb = { version = "0.24.0", optional = true } # keyvalue database for merkle
 # https://github.com/ed255/plonky2/ at branch `feat/debug`, next to the pod2 repo directory), use
 # `plonky2 = { path = "../plonky2/plonky2" }` instead.
 [patch."https://github.com/0xPARC/plonky2"]
-plonky2 = { git = "https://github.com/robknight/plonky2", rev = "224296db5ce1e39849f456c01de710c517e33f12" }
+plonky2 = { git = "https://github.com/robknight/plonky2", rev = "dd072d71e54c42c7af7fade2280731424d2cc3a9" }
 
 # plonky2_u32 from its fork (the gpu branch of robknight/plonky2-u32), which describes its
 # comparison generator's witness operation for plonky2's compiled witness executor.

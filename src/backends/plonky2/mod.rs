@@ -16,7 +16,8 @@ use base64::{prelude::BASE64_STANDARD, Engine};
 pub use error::*;
 #[cfg(feature = "witness_executor")]
 pub use plonky2::plonk::witness_program::{
-    WitnessBuffers, WitnessCache, WitnessConfig, WitnessFallback,
+    WitnessBuffers, WitnessCache, WitnessConfig, WitnessExecution, WitnessFallback, WitnessGather,
+    WitnessLayout, WitnessPoseidon, WitnessSchedule,
 };
 use plonky2::{
     field::{

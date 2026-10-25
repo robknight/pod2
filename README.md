@@ -11,6 +11,8 @@ pod2 uses the GPU fork of plonky2 ([robknight/plonky2](https://github.com/robkni
 ## Faster witness generation
 With `witness_executor`, POD2 prepares plonky2's compiled witness executor for each circuit before its first proof. The measured fast defaults apply automatically. The plonky2-u32 fork must describe its comparison generator's witness operation; unsupported circuits use the ordinary worklist by default.
 
+Ready-chunk dependency scheduling and hardware-eligible Poseidon batching are automatic. Portable x86 builds detect AVX-512 support at runtime; other machines retain the scalar path. No circuit-specific generated Rust or external compiler is required. `WitnessSchedule::Layers` and `WitnessPoseidon::Scalar` are available for comparisons through the re-exported configuration API.
+
 Set `PLONKY2_EXECUTOR_CACHE_DIR` to enable compiled-executor caching across processes. plonky2 owns identity, validation, loading, compilation, atomic replacement and concurrent preparation. This does not require POD2's `disk_cache` feature. That separate feature still caches POD2 circuit data and padding proofs.
 
 `backends::plonky2::mainpod::prepare(&params, &vd_set)` prepares the circuit, padding proof and witness executor before accepting proof requests. Host executor tables are initialized before it returns. Measure total preparation and first-proof time as well as warm proof time.
