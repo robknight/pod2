@@ -87,7 +87,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     // a circuit, which creates the context.
     #[cfg(feature = "gpu")]
     {
-        let mut config = plonky2::gpu::GpuConfig::default();
+        let mut config = plonky2::gpu::GpuConfig::from_env()?;
         config.proving_workers = args.workers;
         plonky2::gpu::configure(config)?;
     }
