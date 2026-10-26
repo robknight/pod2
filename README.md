@@ -13,13 +13,25 @@ See plonky2's `docs/runtime-configuration.md` for the complete GPU/executor envi
 ## Faster witness generation
 With `witness_executor`, POD2 prepares plonky2's compiled witness executor for each circuit before its first proof. The measured fast defaults apply automatically. The plonky2-u32 fork must describe its comparison generator's witness operation; unsupported circuits use the ordinary worklist by default.
 
-Ready-chunk dependency scheduling and hardware-eligible Poseidon batching are automatic. Portable x86 builds detect AVX-512 support at runtime; other machines retain the scalar path. No circuit-specific generated Rust or external compiler is required. `WitnessSchedule::Layers` and `WitnessPoseidon::Scalar` are available for comparisons through the re-exported configuration API.
+Ready-chunk dependency scheduling and hardware-eligible Poseidon batching are automatic. Portable x86 builds detect AVX-512 support at runtime; other machines retain the scalar path. No circuit-specific generated Rust or external compiler is required. `PLONKY2_EXECUTOR_SCHEDULE=layers` and `PLONKY2_EXECUTOR_POSEIDON=scalar` select comparison policies without an API wrapper.
 
 Set `PLONKY2_EXECUTOR_CACHE_DIR` to enable compiled-executor caching across processes. plonky2 owns identity, validation, loading, compilation, atomic replacement and concurrent preparation. This does not require POD2's `disk_cache` feature. That separate feature still caches POD2 circuit data and padding proofs.
 
 `backends::plonky2::mainpod::prepare(&params, &vd_set)` prepares the circuit, padding proof and witness executor before accepting proof requests. Host executor tables are initialized before it returns. Measure total preparation and first-proof time as well as warm proof time.
 
-Applications can use documented `PLONKY2_EXECUTOR_*` process defaults without forwarding backend-specific fields through POD2. For programmatic resource control, call `backends::plonky2::configure_witness_executor(WitnessConfig)` before the first preparation or proof. The relevant configuration types are re-exported there. A caller-owned Rayon pool can be shared across circuits. POD2 shares cached circuit data within a process, so configuration changes after preparation are rejected. Invalid settings and unexpected preparation errors are returned; cache I/O failures allow memory-only preparation. `WitnessFallback::Error` requires compiled execution, including rejecting unsupported circuits.
+Applications control deployment policy through `PLONKY2_EXECUTOR_*`; plonky2 applies it after POD2's defaults. POD2 does not re-export plonky2 configuration structs or policy enums. For an application-owned Rayon witness pool, call `backends::plonky2::set_witness_thread_pool(Arc<rayon::ThreadPool>)` before the first preparation or proof. That explicit resource takes precedence over the environment thread-count hint while other environment settings remain effective. The pool is retained with POD2's process-wide circuit caches and cannot be replaced after preparation begins; other CPU proving work uses its usual pool. Without a supplied pool, default witness work inherits the current Rayon pool (or uses the environment's program-owned pool setting).
+
+For example, an application can inject a shared CPU witness resource using POD2 and Rayon APIs:
+
+```rust,ignore
+let pool = std::sync::Arc::new(
+    rayon::ThreadPoolBuilder::new().num_threads(2).build()?
+);
+pod2::backends::plonky2::set_witness_thread_pool(pool)?;
+// Prepare or prove using POD2 normally; policy still comes from the environment.
+```
+
+Invalid settings and unexpected preparation errors are returned; cache I/O failures allow memory-only preparation. `PLONKY2_EXECUTOR_FALLBACK=error` requires compiled execution, including rejecting unsupported circuits. POD2 leaves global GPU settings to plonky2 and the application's environment. A private plonky2 GPU context does not select the device for POD2 proofs.
 
 ```sh
 PLONKY2_EXECUTOR_CACHE_DIR=/var/cache/my-app/executors cargo run --release --features gpu,witness_executor --example mainpod_prove -- --prepare --proofs 4

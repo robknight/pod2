@@ -14,11 +14,6 @@ use std::iter;
 
 use base64::{prelude::BASE64_STANDARD, Engine};
 pub use error::*;
-#[cfg(feature = "witness_executor")]
-pub use plonky2::plonk::witness_program::{
-    WitnessBuffers, WitnessCache, WitnessConfig, WitnessExecution, WitnessFallback, WitnessGather,
-    WitnessLayout, WitnessPoseidon, WitnessSchedule,
-};
 use plonky2::{
     field::{
         extension::quadratic::QuadraticExtension,
@@ -33,7 +28,7 @@ use rand_chacha::ChaCha20Rng;
 use serde::{ser, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(feature = "witness_executor")]
-pub use witness_program::configure as configure_witness_executor;
+pub use witness_program::set_thread_pool as set_witness_thread_pool;
 
 use crate::{
     backends::plonky2::{
