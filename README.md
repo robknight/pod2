@@ -8,7 +8,7 @@
 ## GPU proving
 pod2 uses the GPU fork of plonky2 ([robknight/plonky2](https://github.com/robknight/plonky2/tree/gpu)), which adds GPU proving through wgpu without changing proofs, circuit data or the verifier (see its [docs/gpu.md](https://github.com/robknight/plonky2/blob/gpu/docs/gpu.md)). With the `gpu` feature, proofs run on a GPU when one is usable (Metal, Vulkan or DirectX 12, chosen at run time) and on the CPU otherwise; set typed `PLONKY2_GPU_*` environment defaults without passing plonky2 configuration through POD2. For example, `PLONKY2_GPU_PROVING_WORKERS=4` sizes resources for four concurrent proofs, `PLONKY2_GPU_RETAINED_BYTES=0` disables retained GPU caches, and `PLONKY2_GPU_ENABLED=false` keeps proving on the CPU. Programmatic overrides remain available through `plonky2::gpu::configure` before the first proof. `gpu-profiling` adds plonky2's GPU diagnostics.
 
-See plonky2's `docs/runtime-configuration.md` for the complete GPU/executor environment contract, precedence and startup validation. `examples/mainpod_prove.rs` preserves those environment defaults while overriding its known actual worker count from the CLI.
+See plonky2's `docs/runtime-configuration.md` for the complete GPU/executor environment contract, precedence and startup validation. `examples/mainpod_prove.rs` preserves those environment defaults while overriding its known actual worker count from the CLI. It always calls `mainpod::prepare` before proving and reports preparation time separately. With persistent caches configured, expensive generation is normally a one-time cost per compatible build/configuration; cache loading and runtime setup still occur each process. The old `--prepare` flag remains accepted.
 
 ## Faster witness generation
 With `witness_executor`, POD2 prepares plonky2's compiled witness executor for each circuit before its first proof. The measured fast defaults apply automatically. The plonky2-u32 fork must describe its comparison generator's witness operation; unsupported circuits use the ordinary worklist by default.
@@ -33,8 +33,13 @@ pod2::backends::plonky2::set_witness_thread_pool(pool)?;
 
 Invalid settings and unexpected preparation errors are returned; cache I/O failures allow memory-only preparation. `PLONKY2_EXECUTOR_FALLBACK=error` requires compiled execution, including rejecting unsupported circuits. POD2 leaves global GPU settings to plonky2 and the application's environment. A private plonky2 GPU context does not select the device for POD2 proofs.
 
+To persist both circuit/padding artifacts and executor plans, select `disk_cache` instead of the default `mem_cache`:
+
 ```sh
-PLONKY2_EXECUTOR_CACHE_DIR=/var/cache/my-app/executors cargo run --release --features gpu,witness_executor --example mainpod_prove -- --prepare --proofs 4
+PLONKY2_EXECUTOR_CACHE_DIR=.cache/executors \
+cargo run --release --no-default-features \
+  --features backend_plonky2,zk,gpu,witness_executor,disk_cache \
+  --example mainpod_prove -- --proofs 4
 ```
 
 See plonky2's `docs/witness-executor.md` for configuration, resource ownership, compatibility, custom-generator checks and the explicit preparation API.

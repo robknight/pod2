@@ -1,6 +1,6 @@
 //! Prove and verify MainPods, for measurement: one proof by default, a
-//! sequence with `--proofs`, or a throughput run with `--workers`; with
-//! `--prepare`, after building and caching what the proofs need.
+//! sequence with `--proofs`, or a throughput run with `--workers`.
+//! Preparation always runs and is timed separately before the first proof.
 //! `RUST_LOG` selects plonky2's diagnostics.
 use pod2::{
     backends::plonky2::{
@@ -15,13 +15,12 @@ const USAGE: &str = "usage: mainpod_prove [--proofs N] [--workers N] [--pause-ms
   --proofs N     verified MainPod proofs to make (1 to 40, default 1)
   --workers N    proofs made concurrently after the first (1 to 8, default 1)
   --pause-ms MS  sleep after each proof, so a sampler can read resting memory
-  --prepare      call mainpod::prepare before the first proof and time it";
+  --prepare      accepted for compatibility; preparation always runs";
 
 struct Args {
     proofs: usize,
     workers: usize,
     pause: Option<std::time::Duration>,
-    prepare: bool,
 }
 
 fn parse_args() -> anyhow::Result<Args> {
@@ -29,7 +28,6 @@ fn parse_args() -> anyhow::Result<Args> {
         proofs: 1,
         workers: 1,
         pause: None,
-        prepare: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -47,7 +45,8 @@ fn parse_args() -> anyhow::Result<Args> {
             "--pause-ms" => {
                 parsed.pause = Some(std::time::Duration::from_millis(value("--pause-ms")?))
             }
-            "--prepare" => parsed.prepare = true,
+            // Preparation is now automatic; preserve existing invocations.
+            "--prepare" => {}
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -92,11 +91,16 @@ fn run(args: Args) -> anyhow::Result<()> {
         plonky2::gpu::configure(config)?;
     }
     let params = Params::default();
-    if args.prepare {
-        let started = std::time::Instant::now();
-        mainpod::prepare(&params, &DEFAULT_VD_SET)?;
-        println!("prepared in {:?}", started.elapsed());
-    }
+    println!("Preparing MainPod proving artifacts...");
+    let started = std::time::Instant::now();
+    mainpod::prepare(&params, &DEFAULT_VD_SET)?;
+    println!("MainPod preparation completed in {:?}.", started.elapsed());
+    #[cfg(feature = "disk_cache")]
+    println!("Circuit construction and padding proofs are cached on disk, so generating them is normally a one-time cost per compatible build/configuration.");
+    #[cfg(not(feature = "disk_cache"))]
+    println!("Circuit construction and padding proofs are reused within this process. Select disk_cache instead of mem_cache to cache them across runs and make generation normally a one-time cost per compatible build/configuration.");
+    #[cfg(feature = "witness_executor")]
+    println!("Executor compilation is cacheable across runs with PLONKY2_EXECUTOR_CACHE_DIR. Cache loading, validation and runtime setup still run each process.");
     let builder = MainPodBuilder::new(&params, &DEFAULT_VD_SET);
     let prove_one = |i: usize| -> anyhow::Result<()> {
         let started = std::time::Instant::now();
