@@ -56,12 +56,12 @@ rocksdb = { version = "0.24.0", optional = true } # keyvalue database for merkle
 # https://github.com/ed255/plonky2/ at branch `feat/debug`, next to the pod2 repo directory), use
 # `plonky2 = { path = "../plonky2/plonky2" }` instead.
 [patch."https://github.com/0xPARC/plonky2"]
-plonky2 = { git = "https://github.com/robknight/plonky2", rev = "f8635b603f51a2e1409e95565946c6c981c72a48" }
+plonky2 = { git = "https://github.com/robknight/plonky2", rev = "297df888e431557f7fc04b703d88adf47f4b8d77" }
 
 # plonky2_u32 from its fork (the gpu branch of robknight/plonky2-u32), which describes its
 # comparison generator's witness operation for plonky2's compiled witness executor.
 [patch."https://github.com/ax0/plonky2-u32"]
-plonky2_u32 = { git = "https://github.com/robknight/plonky2-u32", rev = "f75f86c2b2120a2bcd6e953f0c91356379256c28" }
+plonky2_u32 = { git = "https://github.com/robknight/plonky2-u32", rev = "7eece0fd946d0c2da49c99aff7aa957462633115" }
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
